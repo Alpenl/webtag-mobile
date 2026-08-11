@@ -1,0 +1,679 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* WebTagShareApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* WebTagShareApp.swift */; };
+		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* ContentView.swift */; };
+		A10000000000000000000003 /* AppIdentifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* AppIdentifiers.swift */; };
+		A10000000000000000000004 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* ShareViewController.swift */; };
+		A10000000000000000000005 /* WebTagShareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* WebTagShareTests.swift */; };
+		A10000000000000000000006 /* WebTagShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A21000000000000000000002 /* WebTagShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, CodeSignOnCopy, ); }; };
+		A10000000000000000000007 /* AppIdentifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* AppIdentifiers.swift */; };
+		A10000000000000000000008 /* WebTagShareCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* WebTagShareCore.swift */; };
+		A10000000000000000000009 /* WebTagShareCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* WebTagShareCore.swift */; };
+		A10000000000000000000010 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* libsqlite3.tbd */; };
+		A10000000000000000000011 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* libsqlite3.tbd */; };
+		A10000000000000000000012 /* WebTagShareUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* WebTagShareUITests.swift */; };
+		A10000000000000000000013 /* ShareItemLoading.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* ShareItemLoading.swift */; };
+		A10000000000000000000014 /* ShareItemLoading.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* ShareItemLoading.swift */; };
+		A10000000000000000000015 /* ShareCandidateCollector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* ShareCandidateCollector.swift */; };
+		A10000000000000000000016 /* ShareCandidateCollector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* ShareCandidateCollector.swift */; };
+		A10000000000000000000017 /* ShareFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* ShareFlowCoordinator.swift */; };
+		A10000000000000000000018 /* ShareFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* ShareFlowCoordinator.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		AA0000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A60000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A30000000000000000000002;
+			remoteInfo = WebTagShareExtension;
+		};
+		AA0000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A60000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A30000000000000000000001;
+			remoteInfo = WebTagShare;
+		};
+		AA0000000000000000000003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A60000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A30000000000000000000001;
+			remoteInfo = WebTagShare;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A40000000000000000000004 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A10000000000000000000006 /* WebTagShareExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* WebTagShareApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebTagShareApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* AppIdentifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIdentifiers.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* WebTagShareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebTagShareTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000008 /* WebTagShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WebTagShare.entitlements; sourceTree = "<group>"; };
+		A20000000000000000000009 /* WebTagShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = WebTagShareExtension.entitlements; sourceTree = "<group>"; };
+		A20000000000000000000010 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
+		A20000000000000000000011 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		A20000000000000000000012 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		A20000000000000000000013 /* WebTagShareCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebTagShareCore.swift; sourceTree = "<group>"; };
+		A20000000000000000000014 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = archive.tbd; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
+		A20000000000000000000015 /* WebTagShareUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebTagShareUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000016 /* ShareItemLoading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareItemLoading.swift; sourceTree = "<group>"; };
+		A20000000000000000000017 /* ShareCandidateCollector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareCandidateCollector.swift; sourceTree = "<group>"; };
+		A20000000000000000000018 /* ShareFlowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareFlowCoordinator.swift; sourceTree = "<group>"; };
+		A21000000000000000000001 /* WebTagShare.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WebTagShare.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A21000000000000000000002 /* WebTagShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WebTagShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A21000000000000000000003 /* WebTagShareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WebTagShareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A21000000000000000000004 /* WebTagShareUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WebTagShareUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A40000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000010 /* libsqlite3.tbd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000011 /* libsqlite3.tbd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000009 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000012 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A50000000000000000000000 = {
+			isa = PBXGroup;
+			children = (
+				A50000000000000000000001 /* Config */,
+				A50000000000000000000002 /* WebTagShare */,
+				A50000000000000000000003 /* WebTagShareTests */,
+				A50000000000000000000009 /* WebTagShareUITests */,
+				A50000000000000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A50000000000000000000001 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000010 /* Shared.xcconfig */,
+				A20000000000000000000011 /* Debug.xcconfig */,
+				A20000000000000000000012 /* Release.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000002 /* WebTagShare */ = {
+			isa = PBXGroup;
+			children = (
+				A50000000000000000000005 /* App */,
+				A50000000000000000000006 /* ShareExtension */,
+				A50000000000000000000007 /* Shared */,
+				A50000000000000000000008 /* Resources */,
+				A20000000000000000000008 /* WebTagShare.entitlements */,
+				A20000000000000000000009 /* WebTagShareExtension.entitlements */,
+			);
+			path = WebTagShare;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000003 /* WebTagShareTests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000005 /* WebTagShareTests.swift */,
+			);
+			path = WebTagShareTests;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000009 /* WebTagShareUITests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000015 /* WebTagShareUITests.swift */,
+			);
+			path = WebTagShareUITests;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A21000000000000000000001 /* WebTagShare.app */,
+				A21000000000000000000002 /* WebTagShareExtension.appex */,
+				A21000000000000000000003 /* WebTagShareTests.xctest */,
+				A21000000000000000000004 /* WebTagShareUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000005 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* WebTagShareApp.swift */,
+				A20000000000000000000002 /* ContentView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000006 /* ShareExtension */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000004 /* ShareViewController.swift */,
+				A20000000000000000000007 /* Info.plist */,
+			);
+			path = ShareExtension;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000007 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000003 /* AppIdentifiers.swift */,
+				A20000000000000000000013 /* WebTagShareCore.swift */,
+				A20000000000000000000016 /* ShareItemLoading.swift */,
+				A20000000000000000000017 /* ShareCandidateCollector.swift */,
+				A20000000000000000000018 /* ShareFlowCoordinator.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000008 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000006 /* Info.plist */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A30000000000000000000001 /* WebTagShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A80000000000000000000002 /* Build configuration list for PBXNativeTarget "WebTagShare" */;
+			buildPhases = (
+				A40000000000000000000001 /* Sources */,
+				A40000000000000000000002 /* Frameworks */,
+				A40000000000000000000003 /* Resources */,
+				A40000000000000000000004 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A90000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = WebTagShare;
+			productName = WebTagShare;
+			productReference = A21000000000000000000001 /* WebTagShare.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A30000000000000000000002 /* WebTagShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A80000000000000000000003 /* Build configuration list for PBXNativeTarget "WebTagShareExtension" */;
+			buildPhases = (
+				A40000000000000000000005 /* Sources */,
+				A40000000000000000000006 /* Frameworks */,
+				A40000000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WebTagShareExtension;
+			productName = WebTagShareExtension;
+			productReference = A21000000000000000000002 /* WebTagShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		A30000000000000000000003 /* WebTagShareTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A80000000000000000000004 /* Build configuration list for PBXNativeTarget "WebTagShareTests" */;
+			buildPhases = (
+				A40000000000000000000008 /* Sources */,
+				A40000000000000000000009 /* Frameworks */,
+				A40000000000000000000010 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A90000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = WebTagShareTests;
+			productName = WebTagShareTests;
+			productReference = A21000000000000000000003 /* WebTagShareTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		A30000000000000000000004 /* WebTagShareUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A80000000000000000000005 /* Build configuration list for PBXNativeTarget "WebTagShareUITests" */;
+			buildPhases = (
+				A40000000000000000000011 /* Sources */,
+				A40000000000000000000012 /* Frameworks */,
+				A40000000000000000000013 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A90000000000000000000003 /* PBXTargetDependency */,
+			);
+			name = WebTagShareUITests;
+			productName = WebTagShareUITests;
+			productReference = A21000000000000000000004 /* WebTagShareUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A60000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					A30000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					A30000000000000000000002 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					A30000000000000000000003 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = A30000000000000000000001;
+					};
+					A30000000000000000000004 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = A30000000000000000000001;
+					};
+				};
+			};
+			buildConfigurationList = A80000000000000000000001 /* Build configuration list for PBXProject "WebTagShare" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A50000000000000000000000;
+			productRefGroup = A50000000000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A30000000000000000000001 /* WebTagShare */,
+				A30000000000000000000002 /* WebTagShareExtension */,
+				A30000000000000000000003 /* WebTagShareTests */,
+				A30000000000000000000004 /* WebTagShareUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A40000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000010 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000013 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A40000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000003 /* AppIdentifiers.swift in Sources */,
+				A10000000000000000000008 /* WebTagShareCore.swift in Sources */,
+				A10000000000000000000013 /* ShareItemLoading.swift in Sources */,
+				A10000000000000000000015 /* ShareCandidateCollector.swift in Sources */,
+				A10000000000000000000017 /* ShareFlowCoordinator.swift in Sources */,
+				A10000000000000000000002 /* ContentView.swift in Sources */,
+				A10000000000000000000001 /* WebTagShareApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000007 /* AppIdentifiers.swift in Sources */,
+				A10000000000000000000009 /* WebTagShareCore.swift in Sources */,
+				A10000000000000000000014 /* ShareItemLoading.swift in Sources */,
+				A10000000000000000000016 /* ShareCandidateCollector.swift in Sources */,
+				A10000000000000000000018 /* ShareFlowCoordinator.swift in Sources */,
+				A10000000000000000000004 /* ShareViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000005 /* WebTagShareTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000011 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000012 /* WebTagShareUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A90000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A30000000000000000000002 /* WebTagShareExtension */;
+			targetProxy = AA0000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		A90000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A30000000000000000000001 /* WebTagShare */;
+			targetProxy = AA0000000000000000000002 /* PBXContainerItemProxy */;
+		};
+		A90000000000000000000003 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A30000000000000000000001 /* WebTagShare */;
+			targetProxy = AA0000000000000000000003 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A70000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A20000000000000000000011 /* Debug.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				SDKROOT = iphoneos;
+			};
+			name = Debug;
+		};
+		A70000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A20000000000000000000012 /* Release.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				SDKROOT = iphoneos;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A70000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = WebTagShare/WebTagShare.entitlements;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WebTagShare/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(HOST_BUNDLE_IDENTIFIER)";
+				PRODUCT_MODULE_NAME = WebTagShare;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A70000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = WebTagShare/WebTagShare.entitlements;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WebTagShare/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(HOST_BUNDLE_IDENTIFIER)";
+				PRODUCT_MODULE_NAME = WebTagShare;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A70000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = WebTagShare/WebTagShareExtension.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WebTagShare/ShareExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SHARE_EXTENSION_BUNDLE_IDENTIFIER)";
+				PRODUCT_MODULE_NAME = WebTagShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A70000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = WebTagShare/WebTagShareExtension.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WebTagShare/ShareExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SHARE_EXTENSION_BUNDLE_IDENTIFIER)";
+				PRODUCT_MODULE_NAME = WebTagShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A70000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BASE_BUNDLE_IDENTIFIER).tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WebTagShare.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/WebTagShare";
+			};
+			name = Debug;
+		};
+		A70000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BASE_BUNDLE_IDENTIFIER).tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WebTagShare.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/WebTagShare";
+			};
+			name = Release;
+		};
+		A70000000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BASE_BUNDLE_IDENTIFIER).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = WebTagShare;
+			};
+			name = Debug;
+		};
+		A70000000000000000000010 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BASE_BUNDLE_IDENTIFIER).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = WebTagShare;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A80000000000000000000001 /* Build configuration list for PBXProject "WebTagShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000000000000000000001 /* Debug */,
+				A70000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A80000000000000000000002 /* Build configuration list for PBXNativeTarget "WebTagShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000000000000000000003 /* Debug */,
+				A70000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A80000000000000000000003 /* Build configuration list for PBXNativeTarget "WebTagShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000000000000000000005 /* Debug */,
+				A70000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A80000000000000000000004 /* Build configuration list for PBXNativeTarget "WebTagShareTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000000000000000000007 /* Debug */,
+				A70000000000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A80000000000000000000005 /* Build configuration list for PBXNativeTarget "WebTagShareUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000000000000000000009 /* Debug */,
+				A70000000000000000000010 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A60000000000000000000001 /* Project object */;
+}

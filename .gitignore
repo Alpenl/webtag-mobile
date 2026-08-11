@@ -1,0 +1,18 @@
+# Apple tooling
+.DS_Store
+ios/DerivedData/
+ios/build/
+ios/*.xcodeproj/project.xcworkspace/xcuserdata/
+ios/*.xcodeproj/xcuserdata/
+ios/*.xcworkspace/xcuserdata/
+*.xcuserstate
+
+# Android tooling
+android/.gradle/
+android/.idea/
+android/**/build/
+android/captures/
+android/local.properties
+android/keystore.properties
+*.jks
+*.keystore

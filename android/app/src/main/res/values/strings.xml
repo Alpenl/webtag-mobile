@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WebTag Share</string>
+    <string name="home_title">WebTag Share</string>
+    <string name="home_status">分享即收藏</string>
+    <string name="share_title">WebTag Share</string>
+    <string name="share_received">正在收藏</string>
+    <string name="share_no_supported_content">没找到链接</string>
+    <string name="share_choose_link">选择要收藏的链接</string>
+    <string name="share_not_submitted">尚未提交</string>
+    <string name="close">关闭</string>
+    <string name="server_url">服务器地址</string>
+    <string name="server_url_hint">https://webtag.alpenl.com</string>
+    <string name="api_key">API Key</string>
+    <string name="save_and_test">保存并测试连接</string>
+    <string name="show_api_key">显示 API Key</string>
+    <string name="hide_api_key">隐藏 API Key</string>
+    <string name="connection_ok">连接正常</string>
+    <string name="invalid_credentials">凭证无效</string>
+    <string name="missing_write_scope">缺少 write 权限</string>
+    <string name="network_unavailable">无法连接服务器</string>
+    <string name="configuration_required">请先打开 WebTag 完成设置</string>
+    <string name="queue_title">待处理 · %1$d 条</string>
+    <string name="retry">重试</string>
+    <string name="delete">删除</string>
+    <string name="retry_recoverable">重试可恢复条目</string>
+    <string name="clear_queue">清空</string>
+    <string name="clear_queue_title">清空待处理条目？</string>
+    <string name="clear_queue_message">这会删除本地队列中的 %1$d 条记录。</string>
+    <string name="cancel">取消</string>
+    <string name="confirm">确认</string>
+    <string name="recent_result">最近一条结果</string>
+    <string name="refresh">重新解析</string>
+    <string name="status_saved">已收藏</string>
+    <string name="status_existing">已在库中</string>
+    <string name="status_failed">已在库中，解析失败</string>
+    <string name="status_queued">已加入队列</string>
+    <string name="status_no_candidate">没找到链接</string>
+    <string name="status_auth">凭证无效，请检查设置</string>
+    <string name="status_scope">API Key 缺少 write 权限</string>
+    <string name="status_quota">配额已用完</string>
+    <string name="status_retry">等待重试</string>
+    <string name="status_permanent">提交失败</string>
+    <string name="status_identity">身份已变更</string>
+    <string name="status_expired">已过期</string>
+    <string name="app_instruction">在任意 APP 中点击分享，选择 WebTag 即可收藏</string>
+</resources>
