@@ -1,0 +1,271 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "key": "pending_and_retry",
+      "states": ["pending_submit", "retry_wait"]
+    },
+    {
+      "key": "blocked_credential",
+      "states": ["blocked_auth", "blocked_scope"]
+    },
+    {
+      "key": "blocked_identity",
+      "states": ["blocked_identity"]
+    },
+    {
+      "key": "blocked_quota",
+      "states": ["blocked_quota"]
+    },
+    {
+      "key": "failed_permanent",
+      "states": ["failed_permanent"]
+    },
+    {
+      "key": "expired",
+      "states": ["expired"]
+    }
+  ],
+  "cases": [
+    {
+      "id": "all-eight-states",
+      "rows": [
+        {
+          "id": "row-01",
+          "state": "expired",
+          "url": "https://example.com/expired-first",
+          "first_failed_at": 1754870400000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "row-02",
+          "state": "pending_submit",
+          "url": "https://example.com/pending-one",
+          "first_failed_at": null,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "row-03",
+          "state": "blocked_scope",
+          "url": "https://example.com/scope",
+          "first_failed_at": 1754874000000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "row-04",
+          "state": "retry_wait",
+          "url": "https://example.com/retry-one",
+          "first_failed_at": 1754877600000,
+          "next_attempt_at": 1754881200000,
+          "identity_mismatch": false
+        },
+        {
+          "id": "row-05",
+          "state": "blocked_identity",
+          "url": "",
+          "first_failed_at": 1754884800000,
+          "next_attempt_at": null,
+          "identity_mismatch": true
+        },
+        {
+          "id": "row-06",
+          "state": "blocked_auth",
+          "url": "https://example.com/auth",
+          "first_failed_at": 1754888400000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "row-07",
+          "state": "failed_permanent",
+          "url": "https://example.com/permanent",
+          "first_failed_at": 1754892000000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "row-08",
+          "state": "blocked_quota",
+          "url": "https://example.com/quota",
+          "first_failed_at": 1754895600000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "row-09",
+          "state": "pending_submit",
+          "url": "https://example.com/pending-two",
+          "first_failed_at": null,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "row-10",
+          "state": "retry_wait",
+          "url": "https://example.com/retry-two",
+          "first_failed_at": 1754899200000,
+          "next_attempt_at": 1754902800000,
+          "identity_mismatch": false
+        },
+        {
+          "id": "row-11",
+          "state": "blocked_identity",
+          "url": "",
+          "first_failed_at": null,
+          "next_attempt_at": null,
+          "identity_mismatch": true
+        },
+        {
+          "id": "row-12",
+          "state": "expired",
+          "url": "https://example.com/expired-second",
+          "first_failed_at": 1754906400000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        }
+      ],
+      "expected_total": 12,
+      "expected_groups": [
+        {
+          "key": "pending_and_retry",
+          "count": 4,
+          "row_ids": ["row-02", "row-04", "row-09", "row-10"]
+        },
+        {
+          "key": "blocked_credential",
+          "count": 2,
+          "row_ids": ["row-03", "row-06"]
+        },
+        {
+          "key": "blocked_identity",
+          "count": 2,
+          "row_ids": ["row-05", "row-11"]
+        },
+        {
+          "key": "blocked_quota",
+          "count": 1,
+          "row_ids": ["row-08"]
+        },
+        {
+          "key": "failed_permanent",
+          "count": 1,
+          "row_ids": ["row-07"]
+        },
+        {
+          "key": "expired",
+          "count": 2,
+          "row_ids": ["row-01", "row-12"]
+        }
+      ]
+    },
+    {
+      "id": "empty-queue-has-no-groups",
+      "rows": [],
+      "expected_total": 0,
+      "expected_groups": []
+    },
+    {
+      "id": "single-group-hides-the-other-five",
+      "rows": [
+        {
+          "id": "only-01",
+          "state": "retry_wait",
+          "url": "https://example.com/only-one",
+          "first_failed_at": 1754910000000,
+          "next_attempt_at": 1754913600000,
+          "identity_mismatch": false
+        },
+        {
+          "id": "only-02",
+          "state": "pending_submit",
+          "url": "https://example.com/only-two",
+          "first_failed_at": null,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        }
+      ],
+      "expected_total": 2,
+      "expected_groups": [
+        {
+          "key": "pending_and_retry",
+          "count": 2,
+          "row_ids": ["only-01", "only-02"]
+        }
+      ]
+    },
+    {
+      "id": "last-group-alone-still-renders",
+      "rows": [
+        {
+          "id": "expired-only",
+          "state": "expired",
+          "url": "https://example.com/expired-alone",
+          "first_failed_at": 1754917200000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        }
+      ],
+      "expected_total": 1,
+      "expected_groups": [
+        {
+          "key": "expired",
+          "count": 1,
+          "row_ids": ["expired-only"]
+        }
+      ]
+    },
+    {
+      "id": "repository-order-is-not-sorted-by-group",
+      "rows": [
+        {
+          "id": "interleaved-01",
+          "state": "failed_permanent",
+          "url": "https://example.com/interleaved-one",
+          "first_failed_at": 1754920800000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "interleaved-02",
+          "state": "pending_submit",
+          "url": "https://example.com/interleaved-two",
+          "first_failed_at": null,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "interleaved-03",
+          "state": "failed_permanent",
+          "url": "https://example.com/interleaved-three",
+          "first_failed_at": 1754924400000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "interleaved-04",
+          "state": "pending_submit",
+          "url": "https://example.com/interleaved-four",
+          "first_failed_at": null,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        }
+      ],
+      "expected_total": 4,
+      "expected_groups": [
+        {
+          "key": "pending_and_retry",
+          "count": 2,
+          "row_ids": ["interleaved-02", "interleaved-04"]
+        },
+        {
+          "key": "failed_permanent",
+          "count": 2,
+          "row_ids": ["interleaved-01", "interleaved-03"]
+        }
+      ]
+    }
+  ]
+}

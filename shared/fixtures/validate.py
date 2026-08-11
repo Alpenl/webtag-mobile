@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Validate the checked-in native share payload contract without dependencies."""
+"""Validate the checked-in mobile fixture contracts without dependencies.
+
+Two fixtures live here: the native share payload contract and the settings
+queue-state table that both platforms group into the frozen six sections.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +17,30 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent
 DATA_PATH = ROOT / "share-payloads.json"
 SCHEMA_PATH = ROOT / "share-payloads.schema.json"
+QUEUE_STATES_PATH = ROOT / "queue-states.json"
 MIN_CASES = 200
+
+# The frozen settings grouping: section order, and which queue state feeds which
+# section. Both are part of the contract, so they are spelled out here rather than
+# read back out of the fixture that is being checked.
+QUEUE_GROUP_ORDER = (
+    "pending_and_retry",
+    "blocked_credential",
+    "blocked_identity",
+    "blocked_quota",
+    "failed_permanent",
+    "expired",
+)
+QUEUE_STATE_GROUPS = {
+    "pending_submit": "pending_and_retry",
+    "retry_wait": "pending_and_retry",
+    "blocked_auth": "blocked_credential",
+    "blocked_scope": "blocked_credential",
+    "blocked_identity": "blocked_identity",
+    "blocked_quota": "blocked_quota",
+    "failed_permanent": "failed_permanent",
+    "expired": "expired",
+}
 URL_PATTERN = re.compile(r"^https?://[^\s]+$", re.IGNORECASE)
 SENSITIVE_PATTERN = re.compile(
     r"(?:authorization|bearer|cookie|token=|api[_-]?key|password|session=)",
@@ -116,6 +143,133 @@ def validate_case(case: object, index: int, ids: set[str]) -> None:
             fail(f"{path} contains a sensitive-looking fixture value")
 
 
+def validate_queue_row(row: object, path: str, ids: set[str]) -> None:
+    require_type(row, dict, path)
+    required = {
+        "id",
+        "state",
+        "url",
+        "first_failed_at",
+        "next_attempt_at",
+        "identity_mismatch",
+    }
+    missing = required - row.keys()
+    if missing:
+        fail(f"{path} missing {sorted(missing)}")
+    extra = set(row) - required
+    if extra:
+        fail(f"{path} has unsupported fields {sorted(extra)}")
+
+    row_id = row["id"]
+    require_type(row_id, str, f"{path}.id")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,96}", row_id):
+        fail(f"{path}.id has invalid format")
+    if row_id in ids:
+        fail(f"duplicate row id: {row_id}")
+    ids.add(row_id)
+
+    if row["state"] not in QUEUE_STATE_GROUPS:
+        fail(f"{path}.state is not one of the eight queue states")
+
+    mismatch = row["identity_mismatch"]
+    require_type(mismatch, bool, f"{path}.identity_mismatch")
+    url = row["url"]
+    require_type(url, str, f"{path}.url")
+    # A row the repository fenced out of the active identity reaches the UI with its
+    # URL already stripped; a fixture that carries one would let a redaction
+    # regression pass unnoticed.
+    if mismatch:
+        if url:
+            fail(f"{path}.url must be empty for an identity-mismatched row")
+        if row["state"] != "blocked_identity":
+            fail(f"{path} identity mismatch is only representable as blocked_identity")
+    else:
+        validate_url(url, f"{path}.url")
+
+    for field in ("first_failed_at", "next_attempt_at"):
+        value = row[field]
+        if value is None:
+            continue
+        require_type(value, int, f"{path}.{field}")
+        if value <= 0:
+            fail(f"{path}.{field} must be a positive epoch millisecond value")
+    if SENSITIVE_PATTERN.search(url):
+        fail(f"{path} contains a sensitive-looking fixture value")
+
+
+def validate_queue_case(case: object, index: int, ids: set[str]) -> None:
+    path = f"cases[{index}]"
+    require_type(case, dict, path)
+    required = {"id", "rows", "expected_total", "expected_groups"}
+    missing = required - case.keys()
+    if missing:
+        fail(f"{path} missing {sorted(missing)}")
+    extra = set(case) - required
+    if extra:
+        fail(f"{path} has unsupported fields {sorted(extra)}")
+
+    case_id = case["id"]
+    require_type(case_id, str, f"{path}.id")
+    if case_id in ids:
+        fail(f"duplicate case id: {case_id}")
+    ids.add(case_id)
+
+    rows = case["rows"]
+    require_type(rows, list, f"{path}.rows")
+    row_ids: set[str] = set()
+    for row_index, row in enumerate(rows):
+        validate_queue_row(row, f"{path}.rows[{row_index}]", row_ids)
+
+    # Independently derive what the grouping has to produce. Recomputing it here is
+    # what stops a hand-edited `expected_groups` from teaching both platform suites
+    # the same wrong answer.
+    derived: dict[str, list[str]] = {}
+    for row in rows:
+        derived.setdefault(QUEUE_STATE_GROUPS[row["state"]], []).append(row["id"])
+    expected_derived = [
+        {"key": key, "count": len(derived[key]), "row_ids": derived[key]}
+        for key in QUEUE_GROUP_ORDER
+        if key in derived
+    ]
+    if case["expected_groups"] != expected_derived:
+        fail(
+            f"{path}.expected_groups disagrees with the frozen mapping: "
+            f"expected {expected_derived!r}, got {case['expected_groups']!r}"
+        )
+    if case["expected_total"] != len(rows):
+        fail(f"{path}.expected_total must count every durable row")
+
+
+def validate_queue_states() -> int:
+    data = json.loads(QUEUE_STATES_PATH.read_text(encoding="utf-8"))
+    if data.get("version") != 1:
+        fail("queue-states fixture version must be 1")
+
+    groups = data.get("groups")
+    require_type(groups, list, "groups")
+    if [group["key"] for group in groups] != list(QUEUE_GROUP_ORDER):
+        fail("groups must list the frozen section order exactly once each")
+    declared_states = [state for group in groups for state in group["states"]]
+    if sorted(declared_states) != sorted(QUEUE_STATE_GROUPS):
+        fail("groups must partition all eight queue states")
+    for group in groups:
+        for state in group["states"]:
+            if QUEUE_STATE_GROUPS[state] != group["key"]:
+                fail(f"state {state} is declared under the wrong group")
+
+    cases = data.get("cases")
+    require_type(cases, list, "cases")
+    ids: set[str] = set()
+    for index, case in enumerate(cases):
+        validate_queue_case(case, index, ids)
+
+    covered = {row["state"] for case in cases for row in case["rows"]}
+    uncovered = set(QUEUE_STATE_GROUPS) - covered
+    if uncovered:
+        fail(f"queue-state fixture does not cover {sorted(uncovered)}")
+    return len(cases)
+
+
 def main() -> int:
     try:
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -131,7 +285,11 @@ def main() -> int:
         ids: set[str] = set()
         for index, case in enumerate(cases):
             validate_case(case, index, ids)
-        print(f"validated {len(cases)} share payload cases")
+        queue_cases = validate_queue_states()
+        print(
+            f"validated {len(cases)} share payload cases "
+            f"and {queue_cases} queue-state grouping cases"
+        )
         return 0
     except (OSError, json.JSONDecodeError, ValueError) as error:
         print(f"fixture validation failed: {error}", file=sys.stderr)
