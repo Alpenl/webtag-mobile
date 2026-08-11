@@ -16,3 +16,6 @@ android/local.properties
 android/keystore.properties
 *.jks
 *.keystore
+
+# Release output
+dist/
