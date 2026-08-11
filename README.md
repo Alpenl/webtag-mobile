@@ -28,6 +28,38 @@ The certificate SHA-256 is printed in every release's notes. **It must stay the 
 across upgrades** — a different fingerprint means the APK was not signed with the
 project's key, and Android will refuse to install it over an existing copy anyway.
 
+## Support status
+
+Android is the only maintained target. Its main flow covers deterministic URL
+extraction, configuration validation, encrypted credentials and queued URLs,
+Room-backed delivery, stable idempotency keys, foreground drain, WorkManager
+fallback, explicit refresh, and the settings and share UI.
+
+The iOS tree is a frozen source snapshot: a SwiftUI host, Share Extension, App
+Group SQLite queue, Keychain integration, URLSession client, identity checks,
+and background-upload recovery. Its XCTest contract is runnable, but Linux
+development cannot run Xcode or a simulator, and there is no signing or release
+guarantee. Shared fixtures and static checks still cover the contracts the
+snapshot relies on, so it cannot silently drift away from Android — but Android
+is the delivery surface.
+
+Signed artifacts, production API smoke, emulator and device matrices, and
+accessibility passes are optional release-confidence work, not gates.
+
+## Configuration and safety
+
+The server origin must be HTTPS. `GET /api/session` must return
+`representation_contract=v2`, a canonical `write` scope, and a matching
+`X-WebTag-Data-Namespace` before credentials become active. `POST /api/links`
+sends only `{"url":"..."}` with the queue record's stable `Idempotency-Key`.
+Authenticated requests never follow a cross-origin redirect and never bypass
+system TLS validation. The API key is never written to the queue, logs,
+analytics, or crash reports.
+
+Queue, identity, retry, lease and storage invariants live in
+[`ARCHITECTURE.md`](ARCHITECTURE.md). The frozen product and security decisions
+live in [`docs/design-contract.md`](docs/design-contract.md).
+
 ## Build
 
 Requires JDK 17 and an Android SDK (compileSdk 35).
