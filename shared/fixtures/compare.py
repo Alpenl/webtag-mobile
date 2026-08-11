@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent
 REPOSITORY = ROOT.parents[1]
 DATA_PATH = ROOT / "share-payloads.json"
 ANDROID_TEST = REPOSITORY / "android/app/src/test/java/com/alpenl/webtag/share/UrlCandidateExtractorTest.kt"
+ANDROID_QUEUE_TEST = REPOSITORY / "android/app/src/test/java/com/alpenl/webtag/share/SettingsQueueGroupingTest.kt"
 IOS_TEST = REPOSITORY / "ios/WebTagShareTests/WebTagShareTests.swift"
 URL_PATTERN = re.compile(
     r'''(?i)https?://[^\s<>"'\u2018-\u201f\u3000-\u303f\uff00-\uffef\u4e00-\u9fff]+'''
@@ -159,6 +160,22 @@ def main() -> int:
             "expected_candidates",
             "expected_outcome",
             "XCTAssertEqual(actual, expected, id)",
+        ),
+    )
+
+    # The grouping itself is re-derived in validate.py; what has to be checked here is that the
+    # Android suite still runs the real presenter over the shared table instead of asserting the
+    # JSON against itself.
+    require_tokens(
+        "Android queue grouping",
+        ANDROID_QUEUE_TEST.read_text(encoding="utf-8"),
+        (
+            "queue-states.json",
+            "for (index in 0 until cases.length())",
+            "SettingsQueuePresenter.project",
+            "expected_total",
+            "expected_groups",
+            "assertEquals(id, expectedRowIds, actual.rows.map { it.id })",
         ),
     )
 

@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -44,60 +45,49 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.room.InvalidationTracker
 import com.alpenl.webtag.share.contract.ErrorKind
 import com.alpenl.webtag.share.contract.QueueIdentity
 import com.alpenl.webtag.share.contract.QueueState
+import com.alpenl.webtag.share.contract.RecentResult
 import com.alpenl.webtag.share.contract.RefreshCommitOutcome
 import com.alpenl.webtag.share.contract.RetryPolicy
 import com.alpenl.webtag.share.queue.ConnectionResult
+import com.alpenl.webtag.share.queue.MobileClock
 import com.alpenl.webtag.share.queue.MobileRuntime
 import com.alpenl.webtag.share.queue.RefreshAttempt
+import com.alpenl.webtag.share.settings.QueueGroup
+import com.alpenl.webtag.share.settings.QueueGroupView
+import com.alpenl.webtag.share.settings.RecentProjection
+import com.alpenl.webtag.share.settings.RuntimeSettingsSnapshotSource
+import com.alpenl.webtag.share.settings.SettingsProjection
+import com.alpenl.webtag.share.settings.SettingsQueueProjection
+import com.alpenl.webtag.share.settings.SettingsSnapshotLoader
+import com.alpenl.webtag.share.settings.SettingsTimeFormatter
+import com.alpenl.webtag.share.settings.awaitCooldownDeadline
+import com.alpenl.webtag.share.settings.runForegroundConvergence
 import com.alpenl.webtag.share.ui.theme.WebTagShareTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.DateFormat
 import java.security.MessageDigest
-import java.util.Date
 
 class MainActivity : ComponentActivity() {
-    private var foregroundDrainJob: Job? = null
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             WebTagShareTheme {
                 SettingsScreen(MobileRuntime.get(this@MainActivity))
-            }
-        }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        if (foregroundDrainJob?.isActive == true) return
-        val runtime = MobileRuntime.get(this)
-        foregroundDrainJob = lifecycleScope.launch(Dispatchers.IO) {
-            runtime.repairActiveIdentity()
-            var processed = 0
-            try {
-                while (isActive && processed < 16) {
-                    val drained = runCatching { runtime.coordinator.drainOne() }.getOrDefault(false)
-                    if (!drained) break
-                    processed += 1
-                }
-            } finally {
-                runCatching { runtime.scheduler.schedule() }
             }
         }
     }
@@ -112,8 +102,9 @@ private fun SettingsScreen(runtime: MobileRuntime) {
     var connectionMessage by remember { mutableStateOf("") }
     var lastCheckedAt by remember { mutableStateOf<Long?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var queue by remember { mutableStateOf(emptyList<com.alpenl.webtag.share.contract.QueueView>()) }
-    var recent by remember { mutableStateOf<com.alpenl.webtag.share.contract.RecentResult?>(null) }
+    // Everything a reload is allowed to replace lives in this one value; `origin` and `apiKey`
+    // deliberately do not, so a foreground reload cannot discard a half-typed credential.
+    var projection by remember { mutableStateOf(SettingsProjection.EMPTY) }
     var showClearDialog by remember { mutableStateOf(false) }
     var showPermanentRetryDialog by remember { mutableStateOf(false) }
     var pendingPermanentRetryID by remember { mutableStateOf<String?>(null) }
@@ -121,23 +112,15 @@ private fun SettingsScreen(runtime: MobileRuntime) {
     var pendingIdentityMigration by remember {
         mutableStateOf<com.alpenl.webtag.share.contract.QueueView?>(null)
     }
-    var activeNamespace by remember { mutableStateOf<String?>(null) }
     var refreshBusy by remember { mutableStateOf(false) }
     var connectionRequestGeneration by remember { mutableLongStateOf(0L) }
+    // Bumped every time the host becomes visible again. `delay` is suspended along with the
+    // process, so a cooldown that expired during doze needs an explicit recomputation here.
+    var resumeTick by remember { mutableLongStateOf(0L) }
+    val loader = remember(runtime) { SettingsSnapshotLoader(RuntimeSettingsSnapshotSource(runtime)) }
 
     suspend fun reloadLocal() {
-        val snapshot = withContext(Dispatchers.IO) {
-            val current = runtime.activeConfiguration()
-            val identity = current?.let { QueueIdentity(it.origin, it.namespace) }
-            // A missing or interrupted credential activation must never reveal
-            // URLs from another identity in the settings surface.
-            val displayIdentity = identity ?: QueueIdentity("", "")
-            val localQueue = runCatching { runtime.repository.listViews(displayIdentity) }.getOrDefault(emptyList())
-            val localRecent = runCatching { runtime.repository.readRecent(displayIdentity) }.getOrNull()
-            localQueue to localRecent
-        }
-        queue = snapshot.first
-        recent = snapshot.second
+        loader.load { snapshot -> projection = snapshot.toProjection() }
     }
 
     DisposableEffect(runtime) {
@@ -164,15 +147,26 @@ private fun SettingsScreen(runtime: MobileRuntime) {
         }
     }
 
+    // The one place the credential fields are ever written from storage: the first composition,
+    // before there is a draft to lose. Every later reload goes through `reloadLocal`.
     LaunchedEffect(Unit) {
         val stored = withContext(Dispatchers.IO) { runtime.activeConfiguration() }
         if (stored != null) {
             origin = stored.origin
             apiKey = stored.apiKey
-            activeNamespace = stored.namespace
             connectionMessage = "连接正常"
         }
-        reloadLocal()
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner, runtime) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            resumeTick += 1
+            runForegroundConvergence(
+                reload = { reloadLocal() },
+                reconcile = { runtime.reconcileForeground() },
+            )
+        }
     }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -237,15 +231,15 @@ private fun SettingsScreen(runtime: MobileRuntime) {
                             val previousConfiguration = withContext(Dispatchers.IO) {
                                 runtime.activeConfiguration()
                             }
+                            // A rejected credential is the one case where the draft is rolled back,
+                            // because the user asked for it to be committed and it was not.
                             fun restorePreviousConfiguration() {
                                 previousConfiguration?.let { previous ->
                                     origin = previous.origin
                                     apiKey = previous.apiKey
-                                    activeNamespace = previous.namespace
                                 } ?: run {
                                     origin = ""
                                     apiKey = ""
-                                    activeNamespace = null
                                 }
                             }
                             val result = withContext(Dispatchers.IO) {
@@ -262,7 +256,6 @@ private fun SettingsScreen(runtime: MobileRuntime) {
                                         val configuration = result.configuration
                                         origin = configuration.origin
                                         apiKey = configuration.apiKey
-                                        activeNamespace = configuration.namespace
                                         withContext(Dispatchers.IO) {
                                             runCatching {
                                                 runtime.repository.retryIdentityBlocked(
@@ -304,38 +297,42 @@ private fun SettingsScreen(runtime: MobileRuntime) {
                     )
                 }
             }
-            if (queue.isNotEmpty()) {
+            if (!projection.queue.isEmpty) {
                 item {
                     Text(
-                        text = stringResource(R.string.queue_title, queue.size),
+                        // The total counts every durable row, not the rows currently on screen.
+                        text = stringResource(R.string.queue_title, projection.queue.total),
                         style = MaterialTheme.typography.titleLarge,
                     )
                 }
-                items(queue, key = { it.id }) { item ->
-                    QueueRow(
-                        item = item,
-                        onRetry = {
-                            if (item.state == QueueState.FAILED_PERMANENT) {
-                                pendingPermanentRetryID = item.id
-                                showPermanentRetryDialog = true
-                            } else if (item.state == QueueState.BLOCKED_IDENTITY) {
+                projection.queue.groups.forEach { group ->
+                    item(key = "queue-group-${group.group.key}") { QueueGroupHeader(group) }
+                    items(group.rows, key = { it.id }) { item ->
+                        QueueRow(
+                            item = item,
+                            onRetry = {
+                                if (item.state == QueueState.FAILED_PERMANENT) {
+                                    pendingPermanentRetryID = item.id
+                                    showPermanentRetryDialog = true
+                                } else if (item.state == QueueState.BLOCKED_IDENTITY) {
+                                    pendingIdentityMigration = item
+                                    showIdentityMigrationDialog = true
+                                } else {
+                                    retryQueue(item.id)
+                                }
+                            },
+                            onMigrate = {
                                 pendingIdentityMigration = item
                                 showIdentityMigrationDialog = true
-                            } else {
-                                retryQueue(item.id)
-                            }
-                        },
-                        onMigrate = {
-                            pendingIdentityMigration = item
-                            showIdentityMigrationDialog = true
-                        },
-                        onDelete = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) { runtime.repository.delete(item.id) }
-                                reloadLocal()
-                            }
-                        },
-                    )
+                            },
+                            onDelete = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) { runtime.repository.delete(item.id) }
+                                    reloadLocal()
+                                }
+                            },
+                        )
+                    }
                 }
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -363,13 +360,15 @@ private fun SettingsScreen(runtime: MobileRuntime) {
                     }
                 }
             }
-            if (recent != null) {
+            projection.recent?.let { currentRecent ->
                 item {
                     RecentResultCard(
-                        recent = recent!!,
+                        recent = currentRecent,
                         busy = refreshBusy,
+                        clock = runtime.clock,
+                        resumeTick = resumeTick,
                         onRefresh = {
-                            val selected = recent ?: return@RecentResultCard
+                            val selected = projection.recent ?: return@RecentResultCard
                             if (selected.isIdentityMismatch) {
                                 connectionMessage = "身份已变更"
                                 return@RecentResultCard
@@ -400,7 +399,7 @@ private fun SettingsScreen(runtime: MobileRuntime) {
                         onClear = {
                             scope.launch {
                                 withContext(Dispatchers.IO) { runtime.repository.clearRecent() }
-                                recent = null
+                                projection = projection.copy(recent = null)
                                 reloadLocal()
                             }
                         },
@@ -451,12 +450,12 @@ private fun SettingsScreen(runtime: MobileRuntime) {
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
             title = { Text(stringResource(R.string.clear_queue_title)) },
-            text = { Text(stringResource(R.string.clear_queue_message, queue.size)) },
+            text = { Text(stringResource(R.string.clear_queue_message, projection.queue.total)) },
                 confirmButton = {
                     TextButton(onClick = {
                         scope.launch {
                             withContext(Dispatchers.IO) { runtime.repository.clear() }
-                            queue = emptyList()
+                            projection = projection.copy(queue = SettingsQueueProjection.EMPTY)
                             showClearDialog = false
                             reloadLocal()
                         }
@@ -480,7 +479,7 @@ private fun SettingsScreen(runtime: MobileRuntime) {
                 Text(
                     "旧身份：${pending?.identity?.origin.orEmpty()} · " +
                         "${namespaceFingerprint(pending?.identity?.namespace)}\n" +
-                        "新身份：$origin · ${namespaceFingerprint(activeNamespace)}\n" +
+                        "新身份：$origin · ${namespaceFingerprint(projection.activeNamespace)}\n" +
                         "URL 会用新身份重新加密，并生成新的幂等 key。",
                 )
             },
@@ -521,6 +520,38 @@ private fun SettingsScreen(runtime: MobileRuntime) {
     }
 }
 
+/**
+ * A section heading and its own count.
+ *
+ * The per-section count is the point of the heading: "3 条待提交与重试, 1 条凭证阻断" is an
+ * actionable summary, while one number over eight interleaved states is not.
+ */
+@Composable
+private fun QueueGroupHeader(group: QueueGroupView) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = stringResource(queueGroupTitle(group.group)),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = stringResource(R.string.queue_group_count, group.count),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelMedium,
+        )
+    }
+}
+
+@StringRes
+private fun queueGroupTitle(group: QueueGroup): Int = when (group) {
+    QueueGroup.PENDING_AND_RETRY -> R.string.queue_group_pending_and_retry
+    QueueGroup.BLOCKED_CREDENTIAL -> R.string.queue_group_blocked_credential
+    QueueGroup.BLOCKED_IDENTITY -> R.string.queue_group_blocked_identity
+    QueueGroup.BLOCKED_QUOTA -> R.string.queue_group_blocked_quota
+    QueueGroup.FAILED_PERMANENT -> R.string.queue_group_failed_permanent
+    QueueGroup.EXPIRED -> R.string.queue_group_expired
+}
+
 @Composable
 private fun QueueRow(
     item: com.alpenl.webtag.share.contract.QueueView,
@@ -545,16 +576,16 @@ private fun QueueRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                 )
-                item.firstFailedAt?.let { firstFailedAt ->
+                SettingsTimeFormatter.absolute(item.firstFailedAt)?.let { firstFailedAt ->
                     Text(
-                        text = "首次失败：${formatTime(firstFailedAt)}",
+                        text = "首次失败：$firstFailedAt",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                item.nextAttemptAt?.let { nextAttemptAt ->
+                SettingsTimeFormatter.absolute(item.nextAttemptAt)?.let { nextAttemptAt ->
                     Text(
-                        text = "下次重试：${formatTime(nextAttemptAt)}",
+                        text = "下次重试：$nextAttemptAt",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -577,34 +608,33 @@ private fun QueueRow(
     }
 }
 
+/**
+ * @param resumeTick changes every time the host returns to the foreground, which restarts the
+ *   cooldown wait. `delay` runs off a clock that does not advance while the process is frozen, so a
+ *   deadline crossed in the background is only noticed by recomputing on arrival.
+ */
 @Composable
 private fun RecentResultCard(
-    recent: com.alpenl.webtag.share.contract.RecentResult,
+    recent: RecentResult,
     busy: Boolean,
+    clock: MobileClock,
+    resumeTick: Long,
     onRefresh: () -> Unit,
     onClear: () -> Unit,
 ) {
-    var cooldownNow by remember(recent.refreshBlockReason, recent.refreshNotBefore) {
-        mutableStateOf(System.currentTimeMillis())
+    // Keyed on the whole record: a replacement recent, an identity switch and a cleared cooldown
+    // all have to retire the wait that belonged to the previous one.
+    var cooldownNow by remember(recent, resumeTick) { mutableLongStateOf(clock.now()) }
+    LaunchedEffect(recent, resumeTick) {
+        awaitCooldownDeadline(
+            reason = recent.refreshBlockReason,
+            refreshNotBefore = recent.refreshNotBefore,
+            clock = clock,
+            sleep = { delay(it) },
+            onNow = { cooldownNow = it },
+        )
     }
-    LaunchedEffect(recent.refreshBlockReason, recent.refreshNotBefore) {
-        while (true) {
-            val now = System.currentTimeMillis()
-            cooldownNow = now
-            val remaining = RetryPolicy.refreshCooldownRemainingMillis(
-                recent.refreshBlockReason,
-                recent.refreshNotBefore,
-                now,
-            )
-            if (remaining == 0L) break
-            delay(remaining)
-        }
-    }
-    val cooldownActive = RetryPolicy.refreshCooldownRemainingMillis(
-        recent.refreshBlockReason,
-        recent.refreshNotBefore,
-        cooldownNow,
-    ) > 0
+    val view = RecentProjection.of(recent, cooldownNow, busy)
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -613,46 +643,45 @@ private fun RecentResultCard(
         }
         Card(shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (recent.isIdentityMismatch) {
+                if (view.redacted) {
                     Text("身份已变更", color = MaterialTheme.colorScheme.error)
                 } else {
                     Text(
-                        recent.url,
+                        view.url,
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    Text(statusLabel(recent.status), color = MaterialTheme.colorScheme.primary)
+                    Text(statusLabel(view.status), color = MaterialTheme.colorScheme.primary)
                     Text(
-                        text = "Link ID：${recent.linkId}",
+                        text = "Link ID：${view.linkId}",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    Text(
-                        text = "结果时间：${formatTime(recent.createdAt)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                recent.refreshBlockReason?.let { reason ->
-                    val notBefore = recent.refreshNotBefore
-                    if (reason != RetryPolicy.REFRESH_COOLDOWN_REASON || cooldownActive) {
+                    view.resultTimeMillis?.let { resultTime ->
                         Text(
-                            text = when (reason) {
-                                RetryPolicy.REFRESH_COOLDOWN_REASON -> "重新解析冷却中" +
-                                    (notBefore?.let { " · ${formatTime(it)} 后可重试" } ?: "")
-                                RetryPolicy.REFRESH_QUOTA_REASON -> "配额已用完，处理额度后可手动重试"
-                                else -> reason
-                            },
-                            color = MaterialTheme.colorScheme.error,
+                            text = "结果时间：${formatTime(resultTime)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
                 }
-                if (recent.status == "failed" && !recent.isIdentityMismatch) {
-                    OutlinedButton(onClick = onRefresh, enabled = !busy && !cooldownActive) {
+                view.blockReason?.let { reason ->
+                    Text(
+                        text = when (reason) {
+                            RetryPolicy.REFRESH_COOLDOWN_REASON -> "重新解析冷却中" +
+                                (view.blockNotBefore?.let { " · ${formatTime(it)} 后可重试" } ?: "")
+                            RetryPolicy.REFRESH_QUOTA_REASON -> "配额已用完，处理额度后可手动重试"
+                            else -> reason
+                        },
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (view.refreshVisible) {
+                    OutlinedButton(onClick = onRefresh, enabled = view.refreshEnabled) {
                         Text(stringResource(R.string.refresh))
                     }
                 }
@@ -690,7 +719,7 @@ private fun statusLabel(status: String): String = when (status) {
     else -> "提交失败"
 }
 
-private fun formatTime(epochMillis: Long): String = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(epochMillis))
+private fun formatTime(epochMillis: Long): String = SettingsTimeFormatter.absolute(epochMillis).orEmpty()
 
 private fun namespaceFingerprint(namespace: String?): String {
     if (namespace.isNullOrEmpty()) return "未知"

@@ -31,6 +31,9 @@ import com.alpenl.webtag.share.network.WebTagApi
 import com.alpenl.webtag.share.security.AndroidKeystoreCipher
 import com.alpenl.webtag.share.security.EncryptedCredentialStore
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 
 class QueueScheduler(
     private val context: Context,
@@ -504,6 +507,9 @@ class MobileRuntime private constructor(context: Context) {
     val connectionCoordinator = ConnectionCoordinator(repository, credentials, api)
     val refreshCoordinator = RefreshCoordinator(repository, credentials, api)
 
+    /** The same clock the coordinators commit against, so the UI never disagrees with a deadline. */
+    val clock: MobileClock = systemClock
+
     fun activeConfiguration(): CredentialConfig? = runCatching {
         val snapshot = repository.activeSessionSnapshot() ?: return@runCatching null
         credentials.recover(snapshot)?.takeIf { configuration ->
@@ -516,7 +522,34 @@ class MobileRuntime private constructor(context: Context) {
     /** Completes an interrupted credential promotion, but never recreates Room authority from a file. */
     fun repairActiveIdentity(): Boolean = activeConfiguration() != null
 
+    /**
+     * Repairs the active identity and drains whatever the host was unable to send while it was
+     * backgrounded, then hands the remainder back to the scheduler.
+     *
+     * This lives here rather than in `onStart` so the settings screen can await it and read the
+     * durable state once it has finished, which is the only way the screen shows the result of a
+     * drain it triggered itself.
+     */
+    suspend fun reconcileForeground(maxDrains: Int = FOREGROUND_DRAIN_BUDGET) {
+        withContext(Dispatchers.IO) {
+            repairActiveIdentity()
+            var processed = 0
+            try {
+                while (isActive && processed < maxDrains) {
+                    val drained = runCatching { coordinator.drainOne() }.getOrDefault(false)
+                    if (!drained) break
+                    processed += 1
+                }
+            } finally {
+                runCatching { scheduler.schedule() }
+            }
+        }
+    }
+
     companion object {
+        /** Matches the background worker's budget: a foreground burst must not starve the UI. */
+        const val FOREGROUND_DRAIN_BUDGET = 16
+
         @Volatile
         private var instance: MobileRuntime? = null
 
