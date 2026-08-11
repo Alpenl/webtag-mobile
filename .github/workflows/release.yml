@@ -143,11 +143,30 @@ jobs:
           "${BUILD_TOOLS}/apksigner" verify --print-certs --verbose "${OUT}" | tee "${RUNNER_TEMP}/verify.txt"
           grep -q "APK Signature Scheme v2): true" "${RUNNER_TEMP}/verify.txt"
 
-          CERT_SHA256="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "${RUNNER_TEMP}/verify.txt")"
-          if [ -z "${CERT_SHA256}" ]; then
-            echo "::error::未能读出签名证书指纹"
+          # 指纹行的前缀随 build-tools 版本变化：35 打印 "Signer #1 certificate ..."，
+          # 37 打印 "V3.0 Signer: certificate ..."。只锚定稳定的那一段，否则升级
+          # runner 镜像就会让发布在最后一步炸掉——这条已经真的发生过一次。
+          CERT_SHA256="$(sed -n 's/.*certificate SHA-256 digest: *\([0-9a-f]\{64\}\).*/\1/p' \
+            "${RUNNER_TEMP}/verify.txt" | sort -u)"
+          if [ "$(printf '%s\n' "${CERT_SHA256}" | grep -c .)" != "1" ]; then
+            echo "::error::期望恰好一个签名证书指纹，实际读到：${CERT_SHA256:-<空>}"
             exit 1
           fi
+
+          # APK 确实由预期的那把密钥签名，而不是「某把」密钥。换错 secret 是真实的
+          # 失败模式，而它签出来的包一样能通过 apksigner verify。
+          EXPECTED_SHA256="$(keytool -list -v -keystore "${KEYSTORE}" \
+            -storepass "${KEYSTORE_PASSWORD}" -alias "${KEY_ALIAS}" 2>/dev/null \
+            | awk '/^[[:space:]]*SHA256:/ {gsub(/:/, "", $2); print tolower($2); exit}')"
+          if [ -z "${EXPECTED_SHA256}" ]; then
+            echo "::error::未能从 keystore 读出预期指纹"
+            exit 1
+          fi
+          if [ "${CERT_SHA256}" != "${EXPECTED_SHA256}" ]; then
+            echo "::error::APK 的签名身份与 keystore 不符：APK=${CERT_SHA256} keystore=${EXPECTED_SHA256}"
+            exit 1
+          fi
+          echo "签名身份已核对：${CERT_SHA256}"
           printf 'cert=%s\n' "${CERT_SHA256}" >> "$GITHUB_OUTPUT"
 
           ( cd dist && sha256sum ./*.apk > SHA256SUMS )
