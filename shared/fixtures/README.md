@@ -60,10 +60,9 @@ suites the same wrong answer. It intentionally does not import either native
 implementation.
 
 The cross-platform result contract can be checked with the repository command
-`python3 mobile/shared/fixtures/compare.py`. This gate runs a dependency-free
+`python3 shared/fixtures/compare.py`. This gate runs a dependency-free
 reference extractor against every ordered case, compares candidates and the
 recorded outcome, prints a stable result digest, and confirms that the Android
-and frozen iOS parameterized suites remain wired to their native extractors
-and the same JSON fields. The required fast gate runs the Android JVM suite;
-iOS runtime tests are retained as source coverage but are not an active CI
-requirement for the frozen snapshot.
+and iOS parameterized suites remain wired to their native extractors and the
+same JSON fields. Android runs the fast JVM suite and API 26 instrumentation;
+iOS runs its XCTest and UI test targets on a public macOS runner.

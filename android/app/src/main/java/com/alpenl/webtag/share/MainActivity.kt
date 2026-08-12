@@ -1,5 +1,6 @@
 package com.alpenl.webtag.share
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,7 +36,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -45,15 +45,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.room.InvalidationTracker
 import com.alpenl.webtag.share.contract.ErrorKind
 import com.alpenl.webtag.share.contract.QueueIdentity
 import com.alpenl.webtag.share.contract.QueueState
@@ -67,14 +63,12 @@ import com.alpenl.webtag.share.queue.RefreshAttempt
 import com.alpenl.webtag.share.settings.QueueGroup
 import com.alpenl.webtag.share.settings.QueueGroupView
 import com.alpenl.webtag.share.settings.RecentProjection
-import com.alpenl.webtag.share.settings.RuntimeSettingsSnapshotSource
 import com.alpenl.webtag.share.settings.SettingsProjection
-import com.alpenl.webtag.share.settings.SettingsQueueProjection
-import com.alpenl.webtag.share.settings.SettingsSnapshotLoader
 import com.alpenl.webtag.share.settings.SettingsTimeFormatter
 import com.alpenl.webtag.share.settings.awaitCooldownDeadline
-import com.alpenl.webtag.share.settings.runForegroundConvergence
+import com.alpenl.webtag.share.data.TodoLocalSnapshot
 import com.alpenl.webtag.share.ui.theme.WebTagShareTheme
+import com.alpenl.webtag.share.ui.companion.CompanionApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -82,19 +76,36 @@ import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 
 class MainActivity : ComponentActivity() {
+    private var deepLinkRoute by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        deepLinkRoute = intent.companionRoute()
         enableEdgeToEdge()
         setContent {
             WebTagShareTheme {
-                SettingsScreen(MobileRuntime.get(this@MainActivity))
+                CompanionApp(MobileRuntime.get(this@MainActivity), deepLinkRoute)
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        deepLinkRoute = intent.companionRoute()
+    }
 }
 
+private fun Intent.companionRoute(): String? = data?.takeIf { it.scheme == "webtag" }?.host
+
 @Composable
-private fun SettingsScreen(runtime: MobileRuntime) {
+internal fun SettingsScreen(
+    runtime: MobileRuntime,
+    projection: SettingsProjection,
+    todoSnapshot: TodoLocalSnapshot,
+    resumeTick: Long,
+    reloadLocal: suspend () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     var origin by remember { mutableStateOf("") }
     var apiKey by remember { mutableStateOf("") }
@@ -102,9 +113,6 @@ private fun SettingsScreen(runtime: MobileRuntime) {
     var connectionMessage by remember { mutableStateOf("") }
     var lastCheckedAt by remember { mutableStateOf<Long?>(null) }
     var busy by remember { mutableStateOf(false) }
-    // Everything a reload is allowed to replace lives in this one value; `origin` and `apiKey`
-    // deliberately do not, so a foreground reload cannot discard a half-typed credential.
-    var projection by remember { mutableStateOf(SettingsProjection.EMPTY) }
     var showClearDialog by remember { mutableStateOf(false) }
     var showPermanentRetryDialog by remember { mutableStateOf(false) }
     var pendingPermanentRetryID by remember { mutableStateOf<String?>(null) }
@@ -114,29 +122,6 @@ private fun SettingsScreen(runtime: MobileRuntime) {
     }
     var refreshBusy by remember { mutableStateOf(false) }
     var connectionRequestGeneration by remember { mutableLongStateOf(0L) }
-    // Bumped every time the host becomes visible again. `delay` is suspended along with the
-    // process, so a cooldown that expired during doze needs an explicit recomputation here.
-    var resumeTick by remember { mutableLongStateOf(0L) }
-    val loader = remember(runtime) { SettingsSnapshotLoader(RuntimeSettingsSnapshotSource(runtime)) }
-
-    suspend fun reloadLocal() {
-        loader.load { snapshot -> projection = snapshot.toProjection() }
-    }
-
-    DisposableEffect(runtime) {
-        val observer = object : InvalidationTracker.Observer(
-            "queue_entries",
-            "recent_results",
-            "active_session",
-        ) {
-            override fun onInvalidated(tables: Set<String>) {
-                scope.launch { reloadLocal() }
-            }
-        }
-        runtime.database.invalidationTracker.addObserver(observer)
-        onDispose { runtime.database.invalidationTracker.removeObserver(observer) }
-    }
-
     fun retryQueue(id: String) {
         scope.launch {
             withContext(Dispatchers.IO) {
@@ -155,17 +140,6 @@ private fun SettingsScreen(runtime: MobileRuntime) {
             origin = stored.origin
             apiKey = stored.apiKey
             connectionMessage = "连接正常"
-        }
-    }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    LaunchedEffect(lifecycleOwner, runtime) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            resumeTick += 1
-            runForegroundConvergence(
-                reload = { reloadLocal() },
-                reconcile = { runtime.reconcileForeground() },
-            )
         }
     }
 
@@ -297,6 +271,49 @@ private fun SettingsScreen(runtime: MobileRuntime) {
                     )
                 }
             }
+            item {
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                Text("待办同步", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    text = when (todoSnapshot.todosEnabled) {
+                        false -> "当前服务器未启用待办接口"
+                        else -> buildString {
+                            append("本地 ${todoSnapshot.items.size} 项")
+                            if (todoSnapshot.pendingOperations > 0) {
+                                append(" · ${todoSnapshot.pendingOperations} 项待同步")
+                            }
+                            if (todoSnapshot.blockedOperations > 0) {
+                                append(" · ${todoSnapshot.blockedOperations} 项需要处理")
+                            }
+                        }
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                todoSnapshot.lastSyncedAt?.let {
+                    Text(
+                        text = "上次同步 ${formatTime(it)}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy && projection.activeNamespace != null,
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            withContext(Dispatchers.IO) {
+                                runCatching { runtime.todoSyncCoordinator.synchronize() }
+                                runCatching { runtime.todoScheduler.schedule() }
+                            }
+                            busy = false
+                            reloadLocal()
+                        }
+                    },
+                ) { Text("立即同步") }
+            }
             if (!projection.queue.isEmpty) {
                 item {
                     Text(
@@ -399,7 +416,6 @@ private fun SettingsScreen(runtime: MobileRuntime) {
                         onClear = {
                             scope.launch {
                                 withContext(Dispatchers.IO) { runtime.repository.clearRecent() }
-                                projection = projection.copy(recent = null)
                                 reloadLocal()
                             }
                         },
@@ -455,7 +471,6 @@ private fun SettingsScreen(runtime: MobileRuntime) {
                     TextButton(onClick = {
                         scope.launch {
                             withContext(Dispatchers.IO) { runtime.repository.clear() }
-                            projection = projection.copy(queue = SettingsQueueProjection.EMPTY)
                             showClearDialog = false
                             reloadLocal()
                         }
@@ -527,7 +542,7 @@ private fun SettingsScreen(runtime: MobileRuntime) {
  * actionable summary, while one number over eight interleaved states is not.
  */
 @Composable
-private fun QueueGroupHeader(group: QueueGroupView) {
+internal fun QueueGroupHeader(group: QueueGroupView) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = stringResource(queueGroupTitle(group.group)),
@@ -553,7 +568,7 @@ private fun queueGroupTitle(group: QueueGroup): Int = when (group) {
 }
 
 @Composable
-private fun QueueRow(
+internal fun QueueRow(
     item: com.alpenl.webtag.share.contract.QueueView,
     onRetry: () -> Unit,
     onDelete: () -> Unit,
@@ -614,7 +629,7 @@ private fun QueueRow(
  *   deadline crossed in the background is only noticed by recomputing on arrival.
  */
 @Composable
-private fun RecentResultCard(
+internal fun RecentResultCard(
     recent: RecentResult,
     busy: Boolean,
     clock: MobileClock,

@@ -5,6 +5,10 @@ import com.alpenl.webtag.share.contract.RecentResult
 import com.alpenl.webtag.share.contract.RetryPolicy
 import com.alpenl.webtag.share.queue.MobileClock
 import com.alpenl.webtag.share.settings.RecentProjection
+import com.alpenl.webtag.share.settings.SettingsProjection
+import com.alpenl.webtag.share.settings.SettingsSnapshot
+import com.alpenl.webtag.share.settings.SettingsSnapshotLoader
+import com.alpenl.webtag.share.settings.SettingsSnapshotSource
 import com.alpenl.webtag.share.settings.awaitCooldownDeadline
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -13,6 +17,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -70,6 +75,46 @@ class SettingsCooldownTest {
         for (forbidden in listOf("repository", "runtime", "api", "database", "Dao", "refresh(")) {
             assertFalse(forbidden, body.contains(forbidden))
         }
+    }
+
+    @Test
+    fun crossingTheDeadlineIssuesNoDurableReadAndCommitsNoNewProjection() = runBlocking {
+        // The source-level assertion above proves the wait *cannot* reach a repository. This one
+        // counts what actually happened around it: the button has to unlock on the clock alone,
+        // so the load path must stay untouched while the deadline passes.
+        val clock = MutableClock(START)
+        val cooling = recent(deadline = START + 60_000)
+        var reads = 0
+        val source = SettingsSnapshotSource {
+            reads += 1
+            SettingsSnapshot(
+                activationRevision = 9,
+                identity = cooling.identity,
+                activeNamespace = "namespace",
+                queue = emptyList(),
+                recent = cooling,
+            )
+        }
+        val loader = SettingsSnapshotLoader(source)
+        var projection = SettingsProjection.EMPTY
+        loader.load { projection = it.toProjection() }
+        val committed = projection
+        assertEquals(1, reads)
+        assertFalse(RecentProjection.of(cooling, clock.now(), busy = false).refreshEnabled)
+
+        awaitCooldownDeadline(
+            reason = cooling.refreshBlockReason,
+            refreshNotBefore = cooling.refreshNotBefore,
+            clock = clock,
+            sleep = { clock.value += it },
+            onNow = {},
+        )
+
+        assertTrue(RecentProjection.of(cooling, clock.now(), busy = false).refreshEnabled)
+        // Zero further reads, and the committed projection is the very same object: reaching a
+        // deadline updates view state and touches nothing durable.
+        assertEquals(1, reads)
+        assertSame(committed, projection)
     }
 
     @Test

@@ -1,10 +1,5 @@
 name: android
 
-# 本仓库只做 Android 构建。iOS 源码随仓库保留，但只接受 Ubuntu 上的静态契约检查
-# （X1 与共享 fixture 比对），不跑 Xcode、不跑 XCTest、不使用 macOS runner。
-#
-# paths 里必须列出 X1 与 wire-smoke 脚本：改坏门禁的那次改动，不能恰好是唯一
-# 不受门禁检查的改动。scripts/mobile-x1-check.py 里有对应断言，删掉这里会让门禁失败。
 on:
   push:
     branches: [main]
@@ -16,6 +11,8 @@ on:
       - "scripts/mobile-x1-check.py"
       - "scripts/mobile-wire-smoke.py"
       - ".github/workflows/android.yml"
+      - ".github/workflows/android-device.yml"
+      - ".github/workflows/ios.yml"
   workflow_dispatch:
 
 permissions:

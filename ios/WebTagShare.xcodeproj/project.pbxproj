@@ -25,6 +25,8 @@
 		A10000000000000000000016 /* ShareCandidateCollector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* ShareCandidateCollector.swift */; };
 		A10000000000000000000017 /* ShareFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* ShareFlowCoordinator.swift */; };
 		A10000000000000000000018 /* ShareFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* ShareFlowCoordinator.swift */; };
+		A10000000000000000000019 /* CompanionTodo.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019 /* CompanionTodo.swift */; };
+		A10000000000000000000020 /* CompanionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000020 /* CompanionViews.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -84,6 +86,8 @@
 		A20000000000000000000016 /* ShareItemLoading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareItemLoading.swift; sourceTree = "<group>"; };
 		A20000000000000000000017 /* ShareCandidateCollector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareCandidateCollector.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* ShareFlowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareFlowCoordinator.swift; sourceTree = "<group>"; };
+		A20000000000000000000019 /* CompanionTodo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionTodo.swift; sourceTree = "<group>"; };
+		A20000000000000000000020 /* CompanionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionViews.swift; sourceTree = "<group>"; };
 		A21000000000000000000001 /* WebTagShare.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WebTagShare.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A21000000000000000000002 /* WebTagShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WebTagShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A21000000000000000000003 /* WebTagShareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WebTagShareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -190,6 +194,8 @@
 			children = (
 				A20000000000000000000001 /* WebTagShareApp.swift */,
 				A20000000000000000000002 /* ContentView.swift */,
+				A20000000000000000000019 /* CompanionTodo.swift */,
+				A20000000000000000000020 /* CompanionViews.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -383,6 +389,8 @@
 			files = (
 				A10000000000000000000003 /* AppIdentifiers.swift in Sources */,
 				A10000000000000000000008 /* WebTagShareCore.swift in Sources */,
+				A10000000000000000000019 /* CompanionTodo.swift in Sources */,
+				A10000000000000000000020 /* CompanionViews.swift in Sources */,
 				A10000000000000000000013 /* ShareItemLoading.swift in Sources */,
 				A10000000000000000000015 /* ShareCandidateCollector.swift in Sources */,
 				A10000000000000000000017 /* ShareFlowCoordinator.swift in Sources */,

@@ -10,6 +10,7 @@ import com.alpenl.webtag.share.data.QueueDatabase
 import com.alpenl.webtag.share.data.QueueEntity
 import com.alpenl.webtag.share.data.QueueRepository
 import com.alpenl.webtag.share.data.RecentResultEntity
+import com.alpenl.webtag.share.data.TodoRepository
 import com.alpenl.webtag.share.contract.QueueIdentity
 import com.alpenl.webtag.share.contract.QueueState
 import com.alpenl.webtag.share.contract.ErrorKind
@@ -27,6 +28,10 @@ import com.alpenl.webtag.share.queue.ConnectionCoordinator
 import com.alpenl.webtag.share.queue.ConnectionResult
 import com.alpenl.webtag.share.security.AndroidKeystoreCipher
 import com.alpenl.webtag.share.security.EncryptedCredentialStore
+import com.alpenl.webtag.share.todo.TodoCreate
+import com.alpenl.webtag.share.todo.TodoItem
+import com.alpenl.webtag.share.todo.TodoOriginKind
+import com.alpenl.webtag.share.todo.TodoPatch
 import java.security.GeneralSecurityException
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -903,6 +908,186 @@ class QueueDatabaseInstrumentedTest {
         }
     }
 
+    @Test
+    fun roomV3MigrationAddsTodoStorageWithoutDroppingCaptureRows() {
+        val name = "queue-todo-migration-${UUID.randomUUID()}"
+        val oldDatabase = migrationHelper.createDatabase(name, 3)
+        oldDatabase.execSQL(
+            "INSERT INTO queue_entries (" +
+                "id, schemaVersion, urlCiphertext, urlNonce, cryptoVersion, idempotencyKey, " +
+                "requestFingerprint, apiOrigin, clientDataNamespace, state, createdAt, " +
+                "firstFailedAt, attemptCount, nextAttemptAt, lastErrorKind, lastErrorCode, " +
+                "lastHttpStatus, linkId, jobId, leaseOwner, leaseExpiresAt, updatedAt" +
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            arrayOf(
+                "todo-migration-entry",
+                1,
+                byteArrayOf(1),
+                byteArrayOf(2),
+                1,
+                "todo-migration-key",
+                "todo-migration-fingerprint",
+                "https://example.org",
+                "m".repeat(43),
+                "pending_submit",
+                1_000L,
+                null,
+                0,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                1_000L,
+            ),
+        )
+        oldDatabase.close()
+
+        val migrated = migrationHelper.runMigrationsAndValidate(
+            name,
+            4,
+            true,
+            QueueDatabase.MIGRATION_3_4,
+        )
+        val queue = migrated.query("SELECT id FROM queue_entries WHERE id = 'todo-migration-entry'")
+        val todoTables = migrated.query(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' " +
+                "AND name IN ('todo_cache', 'todo_outbox', 'todo_sync_state')",
+        )
+        try {
+            assertTrue(queue.moveToFirst())
+            assertTrue(todoTables.moveToFirst())
+            assertEquals(3, todoTables.getInt(0))
+        } finally {
+            queue.close()
+            todoTables.close()
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun roomV4MigrationAddsTodoLeasesWithoutDroppingPendingOperations() {
+        val name = "todo-lease-migration-${UUID.randomUUID()}"
+        val oldDatabase = migrationHelper.createDatabase(name, 4)
+        oldDatabase.execSQL(
+            "INSERT INTO todo_outbox (operationId, apiOrigin, clientDataNamespace, targetTodoId, " +
+                "kind, payloadCiphertext, payloadNonce, cryptoVersion, state, attemptCount, " +
+                "nextAttemptAt, lastErrorKind, createdAt, updatedAt) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            arrayOf(
+                "pending-operation",
+                "https://example.org",
+                "p".repeat(43),
+                UUID.randomUUID().toString(),
+                "create",
+                byteArrayOf(1),
+                byteArrayOf(2),
+                1,
+                "pending",
+                0,
+                null,
+                null,
+                1_000L,
+                1_000L,
+            ),
+        )
+        oldDatabase.close()
+
+        val migrated = migrationHelper.runMigrationsAndValidate(
+            name,
+            5,
+            true,
+            QueueDatabase.MIGRATION_4_5,
+        )
+        val row = migrated.query(
+            "SELECT operationId, leaseOwner, leaseExpiresAt FROM todo_outbox " +
+                "WHERE operationId = 'pending-operation'",
+        )
+        try {
+            assertTrue(row.moveToFirst())
+            assertEquals("pending-operation", row.getString(0))
+            assertTrue(row.isNull(1))
+            assertTrue(row.isNull(2))
+        } finally {
+            row.close()
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun todoRepositoryKeepsEncryptedSnapshotsIdentityBoundAndOptimistic() {
+        val repository = TodoRepository(
+            database,
+            AndroidKeystoreCipher("todo-store-${UUID.randomUUID()}"),
+        )
+        val identityA = QueueIdentity("https://example.org", "a".repeat(43))
+        val identityB = QueueIdentity("https://example.org", "b".repeat(43))
+        repository.replaceServerSnapshot(identityA, listOf(todoItem("server-a", "server text", 2_000)), 3_000)
+
+        assertEquals(listOf("server text"), repository.snapshot(identityA).items.map { it.text })
+        assertTrue(repository.snapshot(identityB).items.isEmpty())
+
+        val localID = repository.stageCreate(identityA, TodoCreate("offline create", null), now = 4_000)
+        val operationID = repository.stagePatch(
+            identityA,
+            localID,
+            TodoPatch(done = true),
+            now = 4_001,
+        )
+        val optimistic = repository.snapshot(identityA)
+        assertEquals(2, optimistic.pendingOperations)
+        assertTrue(optimistic.items.single { it.id == localID }.done)
+        assertTrue(optimistic.items.single { it.id == localID }.localOnly)
+
+        val createClaim = repository.claimDue(identityA, 5_000, 30_000)!!
+        val serverCreated = todoItem("server-created", "offline create", 5_000)
+        assertTrue(repository.completeCreate(createClaim.operation, createClaim.owner, serverCreated, 5_000))
+
+        val rebound = database.todoDao().findOperation(operationID)!!
+        assertEquals(serverCreated.id, rebound.targetTodoId)
+        assertTrue(repository.snapshot(identityA).items.single { it.id == serverCreated.id }.done)
+        assertFalse(repository.snapshot(identityA).items.any { it.id == localID })
+    }
+
+    @Test
+    fun todoOutboxClaimIsAtomicAndRejectsAStaleOwner() {
+        val repository = TodoRepository(
+            database,
+            AndroidKeystoreCipher("todo-lease-${UUID.randomUUID()}"),
+        )
+        val identity = QueueIdentity("https://example.org", "l".repeat(43))
+        repository.stageCreate(identity, TodoCreate("leased create", null), now = 10_000)
+
+        val first = repository.claimDue(identity, 11_000, 30_000)!!
+        assertNull(repository.claimDue(identity, 11_001, 30_000))
+        val second = repository.claimDue(identity, 41_000, 30_000)!!
+        val created = todoItem("leased-server", "leased create", 42_000)
+
+        assertFalse(repository.completeCreate(first.operation, first.owner, created, 42_000))
+        assertTrue(repository.completeCreate(second.operation, second.owner, created, 42_000))
+        assertNull(database.todoDao().findOperation(first.operation.entity.operationId))
+    }
+
+    @Test
+    fun replacingTodoServerSnapshotPreservesPendingDesiredState() {
+        val repository = TodoRepository(
+            database,
+            AndroidKeystoreCipher("todo-replace-${UUID.randomUUID()}"),
+        )
+        val identity = QueueIdentity("https://example.org", "c".repeat(43))
+        val original = todoItem("replace", "old", 1_000)
+        repository.replaceServerSnapshot(identity, listOf(original), 1_500)
+        repository.stagePatch(identity, original.id, TodoPatch(text = "edited"), now = 1_600)
+        repository.replaceServerSnapshot(identity, listOf(original.copy(updatedAt = 2_000)), 2_100)
+
+        val snapshot = repository.snapshot(identity)
+        assertEquals("edited", snapshot.items.single().text)
+        assertTrue(snapshot.items.single().pending)
+    }
+
     private fun queueEntity(id: String, now: Long, state: String = "pending_submit") = QueueEntity(
         id = id,
         schemaVersion = 1,
@@ -926,6 +1111,22 @@ class QueueDatabaseInstrumentedTest {
         leaseOwner = null,
         leaseExpiresAt = null,
         updatedAt = now,
+    )
+
+    private fun todoItem(seed: String, text: String, updatedAt: Long): TodoItem = TodoItem(
+        id = UUID.nameUUIDFromBytes(seed.toByteArray()).toString(),
+        text = text,
+        dueAt = null,
+        done = false,
+        originKind = TodoOriginKind.STANDALONE,
+        originHostKind = null,
+        originHostId = null,
+        originRefJson = null,
+        hostRevision = 0,
+        completedAt = null,
+        createdAt = 1_000,
+        updatedAt = updatedAt,
+        expired = false,
     )
 
     private fun recentEntity(

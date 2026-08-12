@@ -9,6 +9,7 @@ ios/*.xcworkspace/xcuserdata/
 
 # Android tooling
 android/.gradle/
+android/.kotlin/
 android/.idea/
 android/**/build/
 android/captures/

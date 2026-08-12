@@ -24,12 +24,15 @@ import com.alpenl.webtag.share.contract.SubmitResponse
 import com.alpenl.webtag.share.data.QueueDatabase
 import com.alpenl.webtag.share.data.QueueEntity
 import com.alpenl.webtag.share.data.QueueRepository
+import com.alpenl.webtag.share.data.TodoRepository
 import com.alpenl.webtag.share.network.ApiResult
 import com.alpenl.webtag.share.network.ClassifiedFailure
 import com.alpenl.webtag.share.network.WebTagApiClient
 import com.alpenl.webtag.share.network.WebTagApi
 import com.alpenl.webtag.share.security.AndroidKeystoreCipher
 import com.alpenl.webtag.share.security.EncryptedCredentialStore
+import com.alpenl.webtag.share.todo.TodoSyncCoordinator
+import com.alpenl.webtag.share.todo.TodoSyncScheduler
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
@@ -500,12 +503,23 @@ class MobileRuntime private constructor(context: Context) {
     private val cipher = AndroidKeystoreCipher("webtag-share-data-v1")
     val database = QueueDatabase.get(appContext)
     val repository = QueueRepository(database, cipher)
+    val todoRepository = TodoRepository(database, cipher)
     val credentials = EncryptedCredentialStore(appContext)
     val api = WebTagApiClient()
     val scheduler = QueueScheduler(appContext, repository)
     val coordinator = ShareSubmissionCoordinator(repository, credentials, api, scheduler)
     val connectionCoordinator = ConnectionCoordinator(repository, credentials, api)
     val refreshCoordinator = RefreshCoordinator(repository, credentials, api)
+    val todoScheduler = TodoSyncScheduler(appContext, todoRepository) {
+        activeConfiguration()?.let { QueueIdentity(it.origin, it.namespace) }
+    }
+    val todoSyncCoordinator = TodoSyncCoordinator(
+        repository = todoRepository,
+        api = api,
+        activeConfiguration = ::activeConfiguration,
+        activeSession = repository::activeSessionSnapshot,
+        clock = systemClock,
+    )
 
     /** The same clock the coordinators commit against, so the UI never disagrees with a deadline. */
     val clock: MobileClock = systemClock
@@ -540,8 +554,10 @@ class MobileRuntime private constructor(context: Context) {
                     if (!drained) break
                     processed += 1
                 }
+                runCatching { todoSyncCoordinator.synchronize() }
             } finally {
                 runCatching { scheduler.schedule() }
+                runCatching { todoScheduler.schedule() }
             }
         }
     }
