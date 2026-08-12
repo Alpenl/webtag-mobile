@@ -187,7 +187,7 @@ jobs:
           echo "产物干净，签名密钥已清除。"
 
       - name: Upload signed APK artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: webtag-share-release
           path: dist/*
