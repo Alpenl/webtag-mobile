@@ -63,7 +63,8 @@ jobs:
           echo "id=${DEVICE_ID}" >> "$GITHUB_OUTPUT"
           echo "Using simulator ${DEVICE_ID}"
 
-      - name: Build and run iOS tests
+      - name: Build iOS tests
+        id: build
         run: |
           set -o pipefail
           xcodebuild \
@@ -72,15 +73,71 @@ jobs:
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
             -derivedDataPath "$RUNNER_TEMP/WebTagDerivedData" \
             CODE_SIGNING_ALLOWED=NO \
-            test | tee "$RUNNER_TEMP/xcodebuild.log"
+            build-for-testing | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Run iOS unit tests
+        id: unit_tests
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/WebTagShare.xcodeproj \
+            -scheme WebTagShare \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -derivedDataPath "$RUNNER_TEMP/WebTagDerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/WebTagUnitTests.xcresult" \
+            -only-testing:WebTagShareTests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO \
+            test-without-building | tee -a "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Report unit-test results
+        if: always()
+        run: |
+          if [[ -d "$RUNNER_TEMP/WebTagUnitTests.xcresult" ]]; then
+            xcrun xcresulttool get test-results summary \
+              --path "$RUNNER_TEMP/WebTagUnitTests.xcresult" \
+              --format json | tee "$RUNNER_TEMP/unit-test-summary.json"
+            xcrun xcresulttool get test-results tests \
+              --path "$RUNNER_TEMP/WebTagUnitTests.xcresult" \
+              --format json | tee "$RUNNER_TEMP/unit-test-results.json"
+          fi
+
+      - name: Run iOS UI tests
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/WebTagShare.xcodeproj \
+            -scheme WebTagShare \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -derivedDataPath "$RUNNER_TEMP/WebTagDerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/WebTagUITests.xcresult" \
+            -only-testing:WebTagShareUITests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO \
+            test-without-building | tee -a "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Report UI-test results
+        if: always()
+        run: |
+          if [[ -d "$RUNNER_TEMP/WebTagUITests.xcresult" ]]; then
+            xcrun xcresulttool get test-results summary \
+              --path "$RUNNER_TEMP/WebTagUITests.xcresult" \
+              --format json | tee "$RUNNER_TEMP/ui-test-summary.json"
+            xcrun xcresulttool get test-results tests \
+              --path "$RUNNER_TEMP/WebTagUITests.xcresult" \
+              --format json | tee "$RUNNER_TEMP/ui-test-results.json"
+          fi
 
       - name: Upload Xcode result bundle
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: webtag-ios-xctest
           path: |
             ${{ runner.temp }}/xcodebuild.log
-            ${{ runner.temp }}/WebTagDerivedData/Logs/Test/*.xcresult
+            ${{ runner.temp }}/*-test-*.json
+            ${{ runner.temp }}/WebTagUnitTests.xcresult
+            ${{ runner.temp }}/WebTagUITests.xcresult
           if-no-files-found: warn
           retention-days: 7

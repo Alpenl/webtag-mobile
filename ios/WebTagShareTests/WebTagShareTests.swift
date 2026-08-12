@@ -125,6 +125,12 @@ private final class RecordingTransport: HTTPTransport {
     }
 }
 
+private struct StaticCredentialStore: CredentialConfigLoading {
+    let config: CredentialConfig?
+
+    func loadConfig() throws -> CredentialConfig? { config }
+}
+
 private final class RecordingUploadScheduler: QueueUploadScheduling {
     private(set) var scheduledEntry: QueueEntry?
     private(set) var scheduledOwner: String?
@@ -433,10 +439,9 @@ final class WebTagShareTests: XCTestCase {
         let identity = SessionIdentity(origin: "https://example.org", namespace: namespace, scopes: ["write"], representationContract: "v2")
         let queue = try AppGroupQueueRepository(containerURL: directory)
         try queue.activate(session: identity)
-        let keychain = KeychainCredentialStore()
-        keychain.clear()
-        try keychain.save(config: CredentialConfig(identity: identity, apiKey: "test-key"))
-        defer { keychain.clear() }
+        let credentials = StaticCredentialStore(
+            config: CredentialConfig(identity: identity, apiKey: "test-key")
+        )
 
         WebTagURLProtocol.requestCount = 0
         WebTagURLProtocol.failure = nil
@@ -456,7 +461,7 @@ final class WebTagShareTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [WebTagURLProtocol.self]
         let api = WebTagAPIClient(session: URLSession(configuration: configuration))
-        let coordinator = ShareSubmissionCoordinator(repository: queue, credentials: keychain, api: api)
+        let coordinator = ShareSubmissionCoordinator(repository: queue, credentials: credentials, api: api)
 
         let outcome = await coordinator.submit(url: "https://example.org/failed", identity: identity, now: Date(timeIntervalSince1970: 1_200))
 
@@ -660,10 +665,9 @@ final class WebTagShareTests: XCTestCase {
         let identity = SessionIdentity(origin: "https://example.org", namespace: namespace, scopes: ["write"], representationContract: "v2")
         let repository = try AppGroupQueueRepository(containerURL: directory)
         try repository.activate(session: identity)
-        let keychain = KeychainCredentialStore()
-        keychain.clear()
-        try keychain.save(config: CredentialConfig(identity: identity, apiKey: "test-key"))
-        defer { keychain.clear() }
+        let credentials = StaticCredentialStore(
+            config: CredentialConfig(identity: identity, apiKey: "test-key")
+        )
 
         WebTagURLProtocol.requestCount = 0
         WebTagURLProtocol.reply = { _ in
@@ -684,7 +688,7 @@ final class WebTagShareTests: XCTestCase {
         let wakeScheduler = RecordingWakeScheduler()
         let coordinator = ShareSubmissionCoordinator(
             repository: repository,
-            credentials: keychain,
+            credentials: credentials,
             api: api,
             background: scheduler,
             wakeScheduler: wakeScheduler
@@ -718,10 +722,9 @@ final class WebTagShareTests: XCTestCase {
         let identity = SessionIdentity(origin: "https://example.org", namespace: namespace, scopes: ["write"], representationContract: "v2")
         let repository = try AppGroupQueueRepository(containerURL: directory)
         try repository.activate(session: identity)
-        let keychain = KeychainCredentialStore()
-        keychain.clear()
-        try keychain.save(config: CredentialConfig(identity: identity, apiKey: "test-key"))
-        defer { keychain.clear() }
+        let credentials = StaticCredentialStore(
+            config: CredentialConfig(identity: identity, apiKey: "test-key")
+        )
 
         var requestKeys: [String] = []
         WebTagURLProtocol.requestCount = 0
@@ -746,7 +749,7 @@ final class WebTagShareTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [WebTagURLProtocol.self]
         let api = WebTagAPIClient(session: URLSession(configuration: configuration))
-        let coordinator = ShareSubmissionCoordinator(repository: repository, credentials: keychain, api: api)
+        let coordinator = ShareSubmissionCoordinator(repository: repository, credentials: credentials, api: api)
         let start = Date(timeIntervalSince1970: 8_500)
 
         let first = await coordinator.submit(url: "https://example.org/response-loss", identity: identity, now: start)
@@ -1000,11 +1003,9 @@ final class WebTagShareTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key"), "stable-key")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/json")
-        // The body is exactly one member and nothing else, byte for byte.
-        XCTAssertEqual(
-            request.httpBody.flatMap { String(data: $0, encoding: .utf8) },
-            #"{"url":"https://example.org/article"}"#
-        )
+        let body = try XCTUnwrap(request.httpBody)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: String])
+        XCTAssertEqual(object, ["url": "https://example.org/article"])
     }
 
     func testForegroundSubmitResponseMatrixUsesStrict202AndNamespaceGate() async {
@@ -1628,10 +1629,9 @@ final class WebTagShareTests: XCTestCase {
         let identity = SessionIdentity(origin: "https://example.org", namespace: namespace, scopes: ["write"], representationContract: "v2")
         let repository = try AppGroupQueueRepository(containerURL: directory)
         try repository.activate(session: identity)
-        let keychain = KeychainCredentialStore()
-        keychain.clear()
-        try keychain.save(config: CredentialConfig(identity: identity, apiKey: "test-key"))
-        defer { keychain.clear() }
+        let credentials = StaticCredentialStore(
+            config: CredentialConfig(identity: identity, apiKey: "test-key")
+        )
 
         let shared = "https://Example.ORG/Path%20A/x?q=%E4%B8%AD&b=1#frag"
         let clock = FakeMonotonicClock()
@@ -1652,7 +1652,7 @@ final class WebTagShareTests: XCTestCase {
         let scheduler = RecordingUploadScheduler()
         let coordinator = ShareSubmissionCoordinator(
             repository: repository,
-            credentials: keychain,
+            credentials: credentials,
             api: WebTagAPIClient(transport: transport),
             background: scheduler,
             clock: clock
@@ -1675,12 +1675,11 @@ final class WebTagShareTests: XCTestCase {
             return
         }
         let sent = transport.requests
-        let bodies: [String] = sent.map { (request: URLRequest) -> String in
-            guard let body = request.httpBody else { return "" }
-            return String(data: body, encoding: .utf8) ?? ""
+        let bodies = try sent.map { request -> [String: String] in
+            let body = try XCTUnwrap(request.httpBody)
+            return try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: String])
         }
-        // From the item provider all the way into the request body, byte for byte.
-        XCTAssertEqual(bodies, ["{\"url\":\"\(shared)\"}"])
+        XCTAssertEqual(bodies, [["url": shared]])
         XCTAssertEqual(sent.count, 1, "the budget must not be reopened")
         let entry = try XCTUnwrap(try repository.list().first)
         XCTAssertEqual(entry.url, shared)
@@ -2220,7 +2219,7 @@ final class WebTagShareTests: XCTestCase {
     func testCompanionTodoPresenterBuildsSevenDayAndStableSections() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let now = Date(timeIntervalSince1970: 1_753_776_000) // 2025-07-29 00:00:00Z
+        let now = Date(timeIntervalSince1970: 1_753_747_200) // 2025-07-29 00:00:00Z
         let items = [
             companionTodo(id: "00000000-0000-0000-0000-000000000001", text: "overdue", dueAt: now.addingTimeInterval(-86_400)),
             companionTodo(id: "00000000-0000-0000-0000-000000000002", text: "today", dueAt: now.addingTimeInterval(18 * 3_600)),

@@ -457,7 +457,11 @@ enum QueueFailurePolicy {
     }
 }
 
-final class KeychainCredentialStore {
+protocol CredentialConfigLoading {
+    func loadConfig() throws -> CredentialConfig?
+}
+
+final class KeychainCredentialStore: CredentialConfigLoading {
     private let account = "credential-v2"
     private let legacyAccount = "credential-v1"
 
@@ -1806,13 +1810,13 @@ final class InProcessQueueWakeScheduler: QueueWakeScheduling {
 
 final class ShareSubmissionCoordinator {
     private let repository: AppGroupQueueRepository
-    private let credentials: KeychainCredentialStore
+    private let credentials: CredentialConfigLoading
     private let api: WebTagAPIClient
     private let background: QueueUploadScheduling?
     private let clock: ShareMonotonicClock
     private let wakeScheduler: QueueWakeScheduling
 
-    init(repository: AppGroupQueueRepository, credentials: KeychainCredentialStore = KeychainCredentialStore(), api: WebTagAPIClient = WebTagAPIClient(), background: QueueUploadScheduling? = nil, clock: ShareMonotonicClock = SystemMonotonicClock(), wakeScheduler: QueueWakeScheduling = InProcessQueueWakeScheduler()) {
+    init(repository: AppGroupQueueRepository, credentials: CredentialConfigLoading = KeychainCredentialStore(), api: WebTagAPIClient = WebTagAPIClient(), background: QueueUploadScheduling? = nil, clock: ShareMonotonicClock = SystemMonotonicClock(), wakeScheduler: QueueWakeScheduling = InProcessQueueWakeScheduler()) {
         self.repository = repository; self.credentials = credentials; self.api = api; self.background = background; self.clock = clock; self.wakeScheduler = wakeScheduler
     }
 
