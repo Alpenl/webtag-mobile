@@ -2220,7 +2220,7 @@ final class WebTagShareTests: XCTestCase {
     func testCompanionTodoPresenterBuildsSevenDayAndStableSections() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let now = Date(timeIntervalSince1970: 1_753_776_000) // 2025-07-29 00:00:00Z
+        let now = Date(timeIntervalSince1970: 1_753_747_200) // 2025-07-29 00:00:00Z
         let items = [
             companionTodo(id: "00000000-0000-0000-0000-000000000001", text: "overdue", dueAt: now.addingTimeInterval(-86_400)),
             companionTodo(id: "00000000-0000-0000-0000-000000000002", text: "today", dueAt: now.addingTimeInterval(18 * 3_600)),
