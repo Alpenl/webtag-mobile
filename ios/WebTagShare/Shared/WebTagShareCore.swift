@@ -1331,10 +1331,29 @@ final class AppGroupQueueRepository {
 }
 #endif
 
+/// The single point at which a fully-built request leaves this process.
+///
+/// `URLSession` is the only production implementation and satisfies it as-is.
+/// The seam exists because everything worth pinning about a request - method,
+/// path, headers and the exact body bytes - is decided above it by
+/// `WebTagAPIClient`, while the copy of the request that reaches a custom
+/// `URLProtocol` has already had its body taken away by `URLSession`. Observing
+/// the request here is therefore the only way a test can assert on the bytes
+/// the client actually produced.
+protocol HTTPTransport: AnyObject {
+    func send(_ request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+extension URLSession: HTTPTransport {
+    func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        try await data(for: request)
+    }
+}
+
 final class WebTagAPIClient: NSObject, URLSessionTaskDelegate {
-    private let suppliedSession: URLSession?
-    private lazy var session: URLSession = {
-        if let suppliedSession { return suppliedSession }
+    private let suppliedTransport: HTTPTransport?
+    private lazy var transport: HTTPTransport = {
+        if let suppliedTransport { return suppliedTransport }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.httpCookieStorage = nil
@@ -1343,8 +1362,17 @@ final class WebTagAPIClient: NSObject, URLSessionTaskDelegate {
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
 
+    /// Defaults to a redirect-refusing ephemeral session; a caller may hand in
+    /// its own session instead.
     init(session: URLSession? = nil) {
-        suppliedSession = session
+        suppliedTransport = session
+        super.init()
+    }
+
+    /// Sends through anything that can carry a `URLRequest`, which is what lets
+    /// a test hold the request instead of the network.
+    init(transport: HTTPTransport) {
+        suppliedTransport = transport
         super.init()
     }
 
@@ -1439,7 +1467,7 @@ final class WebTagAPIClient: NSObject, URLSessionTaskDelegate {
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if let idempotencyKey { request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key") }
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await transport.send(request)
             guard let http = response as? HTTPURLResponse else { throw CoreError.invalidResponse }
             let namespace = http.value(forHTTPHeaderField: "X-WebTag-Data-Namespace")
             guard acceptedStatusCodes.contains(http.statusCode) else {
@@ -1985,4 +2013,312 @@ final class ShareSubmissionCoordinator {
         return outcome
     }
 
+}
+
+// MARK: - Settings projection
+
+/// The six sections the settings queue renders, in the order they render.
+///
+/// Eight queue states flattened into one list is what this replaces. `blocked_auth`
+/// and `expired` need completely different actions from the reader, and a flat list
+/// gives no signal about which of the two a row is. The order is frozen as
+/// declaration order, so a section cannot be moved by editing a `switch` elsewhere.
+///
+/// Grouping is a *presentation* fact only. Send priority, claiming and the state
+/// machine keep working off `QueueState` and are untouched by anything here.
+enum SettingsQueueGroup: String, CaseIterable {
+    case pendingAndRetry = "pending_and_retry"
+    case blockedCredential = "blocked_credential"
+    case blockedIdentity = "blocked_identity"
+    case blockedQuota = "blocked_quota"
+    case failedPermanent = "failed_permanent"
+    case expired = "expired"
+
+    /// The frozen section heading. Kept next to the case so a new section cannot be
+    /// added without naming it.
+    var title: String {
+        switch self {
+        case .pendingAndRetry: return "待提交与重试"
+        case .blockedCredential: return "凭证阻断"
+        case .blockedIdentity: return "身份阻断"
+        case .blockedQuota: return "配额阻断"
+        case .failedPermanent: return "永久失败"
+        case .expired: return "已过期"
+        }
+    }
+
+    /// The frozen state-to-section mapping, exhaustive on purpose: a new state has
+    /// to choose a home here rather than silently disappearing from the list.
+    static func group(for state: QueueState) -> SettingsQueueGroup {
+        switch state {
+        case .pendingSubmit, .retryWait: return .pendingAndRetry
+        case .blockedAuth, .blockedScope: return .blockedCredential
+        case .blockedIdentity: return .blockedIdentity
+        case .blockedQuota: return .blockedQuota
+        case .failedPermanent: return .failedPermanent
+        case .expired: return .expired
+        }
+    }
+}
+
+/// One rendered section. Never empty: empty sections are dropped in `project`.
+struct SettingsQueueGroupView {
+    let group: SettingsQueueGroup
+    let rows: [QueueEntry]
+
+    var count: Int { rows.count }
+}
+
+/// `total` counts every durable row, including rows in sections that are hidden,
+/// so the header stays a count of what is stored rather than of what is on screen.
+struct SettingsQueueProjection {
+    let total: Int
+    let groups: [SettingsQueueGroupView]
+
+    static let empty = SettingsQueueProjection(total: 0, groups: [])
+}
+
+/// Deterministic grouping, free of SwiftUI so XCTest can pin it directly.
+enum SettingsQueuePresenter {
+    /// Splits repository order into sections without reordering anything inside one.
+    ///
+    /// Rows arrive in the order the repository stores them, which is also the order
+    /// they will be sent in. Sorting within a section would make the list disagree
+    /// with the send order for no reader-visible gain.
+    static func project(_ entries: [QueueEntry]) -> SettingsQueueProjection {
+        var rowsByGroup: [SettingsQueueGroup: [QueueEntry]] = [:]
+        for entry in entries {
+            rowsByGroup[SettingsQueueGroup.group(for: entry.state), default: []].append(entry)
+        }
+        let groups = SettingsQueueGroup.allCases.compactMap { group -> SettingsQueueGroupView? in
+            guard let rows = rowsByGroup[group], !rows.isEmpty else { return nil }
+            return SettingsQueueGroupView(group: group, rows: rows)
+        }
+        return SettingsQueueProjection(total: entries.count, groups: groups)
+    }
+}
+
+/// Whether the recent row may be refreshed right now, and until when if not.
+///
+/// `cooldownUntil` is non-nil only for a *timed* block that is still in the future.
+/// A quota block has no deadline to count down to, so it disables refresh without
+/// arming anything — showing a countdown there would promise a recovery time the
+/// server never gave us.
+struct SettingsRecentRefreshGate: Equatable {
+    let isEnabled: Bool
+    let cooldownUntil: Date?
+    let blockReason: String?
+
+    static let unavailable = SettingsRecentRefreshGate(isEnabled: false, cooldownUntil: nil, blockReason: nil)
+}
+
+enum SettingsRefreshGatePolicy {
+    static let quotaReason = "quota_exceeded"
+    static let cooldownReason = "cooldown_active"
+
+    /// Pure, so the deadline can be evaluated from a timer callback without reading
+    /// the database again — the deadline changes what the view shows, not what is
+    /// stored, and re-reading would turn a display change into disk traffic.
+    ///
+    /// The boundary is deliberately exclusive: at `now == cooldownUntil` the block
+    /// is over, refresh is enabled and the hint is gone.
+    static func evaluate(recent: RecentResult?, now: Date) -> SettingsRecentRefreshGate {
+        guard let recent else { return .unavailable }
+        guard !recent.isIdentityMismatch else { return .unavailable }
+        let reason = recent.refreshBlockReason
+        if reason == quotaReason {
+            return SettingsRecentRefreshGate(isEnabled: false, cooldownUntil: nil, blockReason: reason)
+        }
+        if let notBefore = recent.refreshNotBefore, notBefore > now {
+            return SettingsRecentRefreshGate(isEnabled: false, cooldownUntil: notBefore, blockReason: reason)
+        }
+        return SettingsRecentRefreshGate(isEnabled: true, cooldownUntil: nil, blockReason: nil)
+    }
+}
+
+/// Absolute, platform-locale timestamps.
+///
+/// `nil` in, `nil` out. A missing timestamp must render nothing at all: a
+/// placeholder like "--" sits in the same position as real data and reads as if
+/// the value were known and empty.
+enum SettingsTimeFormatter {
+    static func absolute(_ date: Date?, locale: Locale = .current, timeZone: TimeZone = .current) -> String? {
+        guard let date else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
+/// Wall-clock reads and delayed callbacks, injectable so tests can pin both.
+///
+/// Wall clock rather than the monotonic one used for the share budget: the value
+/// being compared against is `refresh_not_before`, which is stored as an absolute
+/// date and must keep meaning the same instant across a process restart.
+protocol SettingsWallClock: AnyObject {
+    var now: Date { get }
+    func schedule(after delay: TimeInterval, _ body: @escaping () -> Void)
+}
+
+final class SystemSettingsWallClock: SettingsWallClock {
+    private let queue: DispatchQueue
+
+    init(queue: DispatchQueue = DispatchQueue.main) {
+        self.queue = queue
+    }
+
+    var now: Date { Date() }
+
+    func schedule(after delay: TimeInterval, _ body: @escaping () -> Void) {
+        queue.asyncAfter(deadline: .now() + max(0, delay), execute: body)
+    }
+}
+
+/// Fires once at a cooldown deadline so the button unlocks without a redraw.
+///
+/// Before this, the cooldown was recomputed inline while rendering, so it only
+/// expired when something else happened to redraw the screen — a settings screen
+/// left open would stay locked past its own deadline indefinitely.
+///
+/// Invalidation is by generation counter rather than timer cancellation: the
+/// callback checks whether it is still the current arming and does nothing if it
+/// is not. A stale timer that still fires is therefore harmless, which matters
+/// because dispose, identity change and recent replacement can all land while a
+/// timer is in flight.
+final class SettingsCooldownTimer {
+    private let clock: SettingsWallClock
+    private var generation = 0
+
+    init(clock: SettingsWallClock) {
+        self.clock = clock
+    }
+
+    /// Drops any pending arming. Used on dispose, identity change and whenever the
+    /// recent row is replaced.
+    func invalidate() {
+        generation += 1
+    }
+
+    /// Arms for `deadline`, or does nothing when there is nothing to wait for.
+    ///
+    /// A deadline already in the past is not armed: the gate is open already, and
+    /// scheduling a zero delay would fire a redundant recomputation.
+    func arm(until deadline: Date?, onFire: @escaping () -> Void) {
+        invalidate()
+        guard let deadline else { return }
+        let remaining = deadline.timeIntervalSince(clock.now)
+        guard remaining > 0 else { return }
+        let armed = generation
+        clock.schedule(after: remaining) { [weak self] in
+            guard let self, self.generation == armed else { return }
+            onFire()
+        }
+    }
+}
+
+/// One identity-fenced read of the durable state, stamped with the activation
+/// revision that was current when it was taken.
+///
+/// The revision is what makes a late snapshot recognisable: a read started under
+/// one identity and released after another has been activated carries the old
+/// revision and must not be committed.
+struct SettingsSnapshot {
+    let activationRevision: Int64
+    let identity: QueueIdentity?
+    let queue: [QueueEntry]
+    let recent: RecentResult?
+
+    /// No credential is active, so nothing may be attributed to an identity.
+    static let noActiveSession: Int64 = 0
+}
+
+/// Everything the settings queue and recent sections render, derived from one
+/// durable snapshot and nothing else.
+///
+/// There is deliberately no `origin` or `apiKey` here. A lifecycle reload replaces
+/// this whole value, so anything reachable from it is something a reload is allowed
+/// to overwrite — and the credential fields the user may be halfway through typing
+/// are therefore unrepresentable rather than merely carefully avoided.
+struct SettingsProjection {
+    let activationRevision: Int64
+    let identity: QueueIdentity?
+    let queue: SettingsQueueProjection
+    let recent: RecentResult?
+
+    static let empty = SettingsProjection(
+        activationRevision: SettingsSnapshot.noActiveSession,
+        identity: nil,
+        queue: .empty,
+        recent: nil
+    )
+}
+
+/// The reads the settings screen needs, as a protocol so tests can count them.
+///
+/// "The deadline performs zero database work" is part of the frozen contract, and
+/// a claim about how often something is *not* called can only be tested against a
+/// seam that can be counted.
+protocol SettingsSnapshotReading: AnyObject {
+    func activeSessionSnapshot() throws -> ActiveSessionSnapshot?
+    func list(identity: QueueIdentity?) throws -> [QueueEntry]
+    func recent(identity: QueueIdentity?) throws -> RecentResult?
+}
+
+extension AppGroupQueueRepository: SettingsSnapshotReading {}
+
+/// Takes identity-fenced snapshots and refuses to commit stale ones.
+///
+/// Two separate guards, because they fail in different ways:
+///
+/// - `activationRevision != current` rejects a snapshot taken under an identity
+///   that is no longer active. Revisions are persistent and never reused, so
+///   A → B → A produces a third revision and an in-flight A load is still caught.
+/// - `activationRevision < highestCommitted` rejects a snapshot that lost a race
+///   to a newer one that already landed, even though both are for the live
+///   identity.
+final class SettingsSnapshotLoader {
+    private let repository: SettingsSnapshotReading
+    private var highestCommitted = SettingsSnapshot.noActiveSession
+
+    init(repository: SettingsSnapshotReading) {
+        self.repository = repository
+    }
+
+    /// One read of everything the screen shows, fenced to the identity that is
+    /// active at the moment of the read.
+    func snapshot() throws -> SettingsSnapshot {
+        let active = try repository.activeSessionSnapshot()
+        let identity = active.map { QueueIdentity(origin: $0.identity.origin, namespace: $0.identity.namespace) }
+        return SettingsSnapshot(
+            activationRevision: active?.revision ?? SettingsSnapshot.noActiveSession,
+            identity: identity,
+            queue: try repository.list(identity: identity),
+            recent: try repository.recent(identity: identity)
+        )
+    }
+
+    /// Whether this snapshot may still be shown. Committing marks it as the newest
+    /// one seen, so a slower load that started earlier can no longer overwrite it.
+    func commit(_ snapshot: SettingsSnapshot) -> Bool {
+        let current = (try? repository.activeSessionSnapshot())?.revision ?? SettingsSnapshot.noActiveSession
+        guard snapshot.activationRevision == current else { return false }
+        guard snapshot.activationRevision >= highestCommitted else { return false }
+        highestCommitted = snapshot.activationRevision
+        return true
+    }
+
+    /// Convenience for the common path: read, and hand back the projection only if
+    /// it is still current.
+    func loadProjection() -> SettingsProjection? {
+        guard let snapshot = try? snapshot(), commit(snapshot) else { return nil }
+        return SettingsProjection(
+            activationRevision: snapshot.activationRevision,
+            identity: snapshot.identity,
+            queue: SettingsQueuePresenter.project(snapshot.queue),
+            recent: snapshot.recent
+        )
+    }
 }

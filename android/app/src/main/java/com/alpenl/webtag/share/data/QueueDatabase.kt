@@ -305,12 +305,21 @@ interface QueueDao {
 }
 
 @Database(
-    entities = [QueueEntity::class, RecentResultEntity::class, ActiveSessionEntity::class, ActivationStateEntity::class],
-    version = 3,
+    entities = [
+        QueueEntity::class,
+        RecentResultEntity::class,
+        ActiveSessionEntity::class,
+        ActivationStateEntity::class,
+        TodoCacheEntity::class,
+        TodoOutboxEntity::class,
+        TodoSyncStateEntity::class,
+    ],
+    version = 5,
     exportSchema = true,
 )
 abstract class QueueDatabase : RoomDatabase() {
     abstract fun queueDao(): QueueDao
+    abstract fun todoDao(): TodoDao
 
     companion object {
         @Volatile
@@ -323,7 +332,7 @@ abstract class QueueDatabase : RoomDatabase() {
                 "webtag-share-queue.db",
             )
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
                 .also { instance = it }
         }
@@ -359,6 +368,51 @@ abstract class QueueDatabase : RoomDatabase() {
                         "SELECT 1, CASE WHEN EXISTS (SELECT 1 FROM active_session WHERE id = 1) " +
                         "THEN $LEGACY_ACTIVATION_REVISION ELSE 0 END",
                 )
+            }
+        }
+
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS todo_cache (" +
+                        "apiOrigin TEXT NOT NULL, clientDataNamespace TEXT NOT NULL, todoId TEXT NOT NULL, " +
+                        "payloadCiphertext BLOB NOT NULL, payloadNonce BLOB NOT NULL, cryptoVersion INTEGER NOT NULL, " +
+                        "serverUpdatedAt INTEGER NOT NULL, fetchedAt INTEGER NOT NULL, " +
+                        "PRIMARY KEY(apiOrigin, clientDataNamespace, todoId))",
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_todo_cache_apiOrigin_clientDataNamespace_serverUpdatedAt " +
+                        "ON todo_cache (apiOrigin, clientDataNamespace, serverUpdatedAt)",
+                )
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS todo_outbox (" +
+                        "operationId TEXT NOT NULL, apiOrigin TEXT NOT NULL, clientDataNamespace TEXT NOT NULL, " +
+                        "targetTodoId TEXT NOT NULL, kind TEXT NOT NULL, payloadCiphertext BLOB NOT NULL, " +
+                        "payloadNonce BLOB NOT NULL, cryptoVersion INTEGER NOT NULL, state TEXT NOT NULL, " +
+                        "attemptCount INTEGER NOT NULL, nextAttemptAt INTEGER, lastErrorKind TEXT, " +
+                        "createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, PRIMARY KEY(operationId))",
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_todo_outbox_apiOrigin_clientDataNamespace_state_nextAttemptAt " +
+                        "ON todo_outbox (apiOrigin, clientDataNamespace, state, nextAttemptAt)",
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_todo_outbox_apiOrigin_clientDataNamespace_targetTodoId " +
+                        "ON todo_outbox (apiOrigin, clientDataNamespace, targetTodoId)",
+                )
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS todo_sync_state (" +
+                        "apiOrigin TEXT NOT NULL, clientDataNamespace TEXT NOT NULL, todosEnabled INTEGER NOT NULL, " +
+                        "homeEnabled INTEGER NOT NULL, inboxEnabled INTEGER NOT NULL, lastSyncedAt INTEGER, " +
+                        "PRIMARY KEY(apiOrigin, clientDataNamespace))",
+                )
+            }
+        }
+
+        val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE todo_outbox ADD COLUMN leaseOwner TEXT")
+                database.execSQL("ALTER TABLE todo_outbox ADD COLUMN leaseExpiresAt INTEGER")
             }
         }
     }

@@ -1,0 +1,86 @@
+name: ios
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - "shared/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+      - "shared/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  xctest:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Validate shared fixtures
+        run: |
+          python3 shared/fixtures/validate.py
+          python3 shared/fixtures/compare.py
+
+      - name: Select available iPhone simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          preferred = []
+          fallback = []
+          for runtime, entries in devices.items():
+              if "iOS" not in runtime:
+                  continue
+              for entry in entries:
+                  if not entry.get("isAvailable") or not entry.get("name", "").startswith("iPhone"):
+                      continue
+                  fallback.append(entry["udid"])
+                  if entry["name"] in {"iPhone 16", "iPhone 16 Pro", "iPhone 15", "iPhone 15 Pro"}:
+                      preferred.append(entry["udid"])
+          values = preferred or fallback
+          if not values:
+              raise SystemExit("no available iPhone simulator")
+          print(values[0])
+          ' )"
+          echo "id=${DEVICE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Using simulator ${DEVICE_ID}"
+
+      - name: Build and run iOS tests
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/WebTagShare.xcodeproj \
+            -scheme WebTagShare \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -derivedDataPath "$RUNNER_TEMP/WebTagDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            test | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Upload Xcode result bundle
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: webtag-ios-xctest
+          path: |
+            ${{ runner.temp }}/xcodebuild.log
+            ${{ runner.temp }}/WebTagDerivedData/Logs/Test/*.xcresult
+          if-no-files-found: warn
+          retention-days: 7

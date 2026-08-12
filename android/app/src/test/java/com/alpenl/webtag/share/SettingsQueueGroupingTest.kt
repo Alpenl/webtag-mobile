@@ -6,9 +6,16 @@ import com.alpenl.webtag.share.contract.QueueState
 import com.alpenl.webtag.share.contract.QueueView
 import com.alpenl.webtag.share.settings.QueueGroup
 import com.alpenl.webtag.share.settings.SettingsQueuePresenter
+import com.alpenl.webtag.share.settings.SettingsTimeFormatter
+import java.util.Locale
+import java.util.TimeZone
 import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 /**
@@ -20,6 +27,24 @@ import org.junit.Test
  * each section all come out of one comparison.
  */
 class SettingsQueueGroupingTest {
+    private val previousLocale: Locale = Locale.getDefault()
+    private val previousZone: TimeZone = TimeZone.getDefault()
+
+    @Before
+    fun pinPlatformFormatting() {
+        // Rows render their times in the device's locale and zone, so both are pinned to make the
+        // time assertions deterministic. Nothing below compares against a literal rendering: the
+        // short pattern is CLDR data and it moves between JDK builds.
+        Locale.setDefault(Locale.SIMPLIFIED_CHINESE)
+        TimeZone.setDefault(TimeZone.getTimeZone("Asia/Shanghai"))
+    }
+
+    @After
+    fun restorePlatformFormatting() {
+        Locale.setDefault(previousLocale)
+        TimeZone.setDefault(previousZone)
+    }
+
     @Test
     fun sharedFixtureCasesGroupIntoTheFrozenSectionsInOrder() {
         val root = fixture()
@@ -126,6 +151,72 @@ class SettingsQueueGroupingTest {
         assertEquals(listOf(QueueGroup.BLOCKED_IDENTITY), projection.groups.map { it.group })
         assertEquals(listOf(redacted), projection.groups.single().rows)
         assertEquals("", projection.groups.single().rows.single().url)
+    }
+
+    @Test
+    fun everyFixtureRowCarriesItsExactFailureAndRetryInstantsThroughTheGrouping() {
+        val root = fixture()
+        val cases = root.getJSONArray("cases")
+        var nullTimes = 0
+        var presentTimes = 0
+
+        for (index in 0 until cases.length()) {
+            val case = cases.getJSONObject(index)
+            val id = case.getString("id")
+            val declared = case.getJSONArray("rows")
+            val rows = readRows(declared)
+            val projected = SettingsQueuePresenter.project(rows)
+                .groups
+                .flatMap { it.rows }
+                .associateBy { it.id }
+
+            for (rowIndex in 0 until declared.length()) {
+                val json = declared.getJSONObject(rowIndex)
+                val rowId = json.getString("id")
+                val row = projected.getValue(rowId)
+
+                for ((field, actual) in listOf(
+                    "first_failed_at" to row.firstFailedAt,
+                    "next_attempt_at" to row.nextAttemptAt,
+                )) {
+                    val expected = json.optLongOrNull(field)
+                    // Partitioning must hand the row's instants on untouched: a projection that
+                    // rounded or dropped them would still group correctly and still be wrong.
+                    assertEquals("$id/$rowId/$field", expected, actual)
+                    if (expected == null) {
+                        // No instant means no line at all. A placeholder like "--" or "未知" would
+                        // read as a fact about the row rather than as an absence.
+                        assertNull("$id/$rowId/$field", SettingsTimeFormatter.absolute(actual))
+                        nullTimes += 1
+                    } else {
+                        assertNotNull("$id/$rowId/$field", SettingsTimeFormatter.absolute(actual))
+                        presentTimes += 1
+                    }
+                }
+            }
+        }
+
+        // Both branches have to be reachable in the shared table, or this asserts nothing.
+        assertTrue("fixture has no absent times", nullTimes > 0)
+        assertTrue("fixture has no present times", presentTimes > 0)
+    }
+
+    @Test
+    fun rowTimesAnHourApartRenderAsDifferentInstants() {
+        val instants = fixture().getJSONArray("cases").let { cases ->
+            (0 until cases.length()).flatMap { index ->
+                val rows = cases.getJSONObject(index).getJSONArray("rows")
+                (0 until rows.length()).mapNotNull { rows.getJSONObject(it).optLongOrNull("first_failed_at") }
+            }
+        }.toSortedSet()
+
+        val rendered = instants.map { SettingsTimeFormatter.absolute(it) }
+
+        // The fixture's failure times are an hour apart, so a rendering that kept only the date
+        // would collapse them onto each other. Distinctness is what proves the time of day —
+        // the part that tells the reader whether waiting is worth it — reaches the view state.
+        assertTrue("fixture needs several distinct instants", instants.size >= 5)
+        assertEquals(rendered.size, rendered.toSet().size)
     }
 
     private fun readRows(rows: org.json.JSONArray): List<QueueView> =

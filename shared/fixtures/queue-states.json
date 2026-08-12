@@ -266,6 +266,56 @@
           "row_ids": ["interleaved-01", "interleaved-03"]
         }
       ]
+    },
+    {
+      "id": "section-order-disagrees-with-id-state-and-time-order",
+      "rows": [
+        {
+          "id": "zz-late-retry",
+          "state": "retry_wait",
+          "url": "https://example.com/late-retry",
+          "first_failed_at": 1754931600000,
+          "next_attempt_at": 1754935200000,
+          "identity_mismatch": false
+        },
+        {
+          "id": "aa-early-pending",
+          "state": "pending_submit",
+          "url": "https://example.com/early-pending",
+          "first_failed_at": null,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "mm-newer-permanent",
+          "state": "failed_permanent",
+          "url": "https://example.com/newer-permanent",
+          "first_failed_at": 1754938800000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        },
+        {
+          "id": "ab-older-permanent",
+          "state": "failed_permanent",
+          "url": "https://example.com/older-permanent",
+          "first_failed_at": 1754863200000,
+          "next_attempt_at": null,
+          "identity_mismatch": false
+        }
+      ],
+      "expected_total": 4,
+      "expected_groups": [
+        {
+          "key": "pending_and_retry",
+          "count": 2,
+          "row_ids": ["zz-late-retry", "aa-early-pending"]
+        },
+        {
+          "key": "failed_permanent",
+          "count": 2,
+          "row_ids": ["mm-newer-permanent", "ab-older-permanent"]
+        }
+      ]
     }
   ]
 }

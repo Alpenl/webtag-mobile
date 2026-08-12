@@ -87,13 +87,22 @@ final class ShareFlowCoordinator: @unchecked Sendable {
     /// The collected candidates, or an empty collection when nothing was
     /// started.
     func collect() async -> ShareCandidateCollection {
-        lock.lock()
-        let started = run
-        lock.unlock()
-        guard let started else {
+        guard let started = startedRun() else {
             return ShareCandidateCollection(candidates: [], completedRequests: [], reachedDeadline: false)
         }
         return await started.value()
+    }
+
+    /// Reads the run under the lock from a synchronous frame.
+    ///
+    /// The lock never spans the suspension point either way - it is taken and
+    /// released around this one read - but taking it inside an async function
+    /// is what `NSLock` is unavailable for, since the frame that unlocks may no
+    /// longer be the thread that locked.
+    private func startedRun() -> ShareCollectionRun? {
+        lock.lock()
+        defer { lock.unlock() }
+        return run
     }
 
     /// What the sheet must do with what was collected.

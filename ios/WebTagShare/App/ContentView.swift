@@ -14,22 +14,42 @@ final class WebTagSettingsModel: ObservableObject {
     @Published var keyVisible = false
     @Published var status = ""
     @Published var isBusy = false
-    @Published var queue: [QueueEntry] = []
-    @Published var recent: RecentResult?
     @Published var showClearConfirmation = false
     @Published var showPermanentRetryConfirmation = false
     @Published var showIdentityMigrationConfirmation = false
     @Published var refreshBusy = false
+
+    /// Everything the queue and recent sections render, always from one durable
+    /// read. `origin` and `apiKey` are deliberately outside it: a lifecycle reload
+    /// replaces this value wholesale, and an unsaved credential draft must survive
+    /// that, so it is unrepresentable here rather than merely carefully avoided.
+    @Published private(set) var projection: SettingsProjection = .empty
+    /// Recomputed from `projection.recent` and the clock, and re-evaluated by the
+    /// cooldown timer at the exact deadline so the button unlocks on its own.
+    @Published private(set) var refreshGate: SettingsRecentRefreshGate = .unavailable
+
+    var queue: [QueueEntry] { projection.queue.groups.flatMap(\.rows) }
+    var recent: RecentResult? { projection.recent }
 
     private let repository: AppGroupQueueRepository?
     private let coordinator: ShareSubmissionCoordinator?
     private let keychain = KeychainCredentialStore()
     private let api = WebTagAPIClient()
     private var pendingIdentityMigration: QueueEntry?
+    private let loader: SettingsSnapshotLoader?
+    private let clock: SettingsWallClock
+    private let cooldownTimer: SettingsCooldownTimer
 
-    init() {
-        repository = try? AppGroupQueueRepository()
-        coordinator = repository.map { ShareSubmissionCoordinator(repository: $0) }
+    /// `repository` is injectable so a test can drive a real repository in a
+    /// temporary directory. Without it the only way in is the app group container,
+    /// which a unit test host does not reliably have.
+    init(clock: SettingsWallClock = SystemSettingsWallClock(), repository injected: AppGroupQueueRepository? = nil) {
+        let resolved = injected ?? (try? AppGroupQueueRepository())
+        repository = resolved
+        coordinator = resolved.map { ShareSubmissionCoordinator(repository: $0) }
+        loader = resolved.map { SettingsSnapshotLoader(repository: $0) }
+        self.clock = clock
+        cooldownTimer = SettingsCooldownTimer(clock: clock)
         if let repository {
             do {
                 if let stored = try keychain.loadConfig() {
@@ -53,10 +73,50 @@ final class WebTagSettingsModel: ObservableObject {
         do { return try repository.activeIdentity() } catch { return nil }
     }
 
+    /// One identity-fenced read, committed only if it is still the current one.
+    ///
+    /// A snapshot that lost the race — taken under an identity that has since been
+    /// replaced, or overtaken by a newer read — is dropped rather than shown. The
+    /// old failure mode was the opposite: whichever read finished last won, so a
+    /// slow load from the previous identity could repaint the screen with its data.
     func reload() {
-        guard let repository else { return }
-        queue = (try? repository.list(identity: activeIdentity)) ?? []
-        recent = try? repository.recent(identity: activeIdentity)
+        guard let loader, let projection = loader.loadProjection() else { return }
+        apply(projection)
+    }
+
+    /// The foreground contract: read once on becoming active, let the existing
+    /// drain/reconcile run, then read once more so anything it changed is on
+    /// screen. Two reads exactly — no polling loop, no retry.
+    func onForegroundActive() {
+        reload()
+        guard let coordinator else { return }
+        Task {
+            await coordinator.reconcileAndDrain()
+            reload()
+        }
+    }
+
+    /// Drops any armed cooldown timer. The screen going away must not leave a
+    /// callback holding this model alive to update something nobody is looking at.
+    func dispose() {
+        cooldownTimer.invalidate()
+    }
+
+    private func apply(_ projection: SettingsProjection) {
+        self.projection = projection
+        refreshGate = SettingsRefreshGatePolicy.evaluate(recent: projection.recent, now: clock.now)
+        // Re-arming on every projection means identity switches and recent
+        // replacements invalidate the previous deadline for free: `arm` bumps the
+        // generation, so the timer that was in flight for the old row is ignored.
+        // The timer callback is not actor-isolated, so the hop back to the main
+        // actor is explicit. The work itself is view state only: the deadline says
+        // nothing new about the database, so recomputing it reads and writes none.
+        cooldownTimer.arm(until: refreshGate.cooldownUntil) { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.refreshGate = SettingsRefreshGatePolicy.evaluate(recent: self.projection.recent, now: self.clock.now)
+            }
+        }
     }
 
     func saveAndTest() {
@@ -282,8 +342,10 @@ final class WebTagSettingsModel: ObservableObject {
     }
 }
 
-struct ContentView: View {
-    @StateObject private var model = WebTagSettingsModel()
+struct SettingsScreen: View {
+    @ObservedObject var model: WebTagSettingsModel
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -341,16 +403,27 @@ struct ContentView: View {
                     }
                 }
 
-                if !model.queue.isEmpty {
-                    GroupBox("待处理 · \(model.queue.count) 条") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            ForEach(model.queue, id: \.id) { entry in
-                                QueueEntryRow(
-                                    entry: entry,
-                                    retry: { model.retry(entry) },
-                                    migrate: { model.requestIdentityMigration(entry) },
-                                    delete: { model.delete(entry) }
-                                )
+                // The header counts every durable row, including rows in sections
+                // that are hidden, so it stays a count of what is stored rather
+                // than of what happens to be on screen.
+                if model.projection.queue.total > 0 {
+                    GroupBox("待处理 · \(model.projection.queue.total) 条") {
+                        VStack(alignment: .leading, spacing: 16) {
+                            ForEach(model.projection.queue.groups, id: \.group) { section in
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("\(section.group.title) · \(section.count) 条")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                        .accessibilityIdentifier("settings.queue.group.\(section.group.rawValue)")
+                                    ForEach(section.rows, id: \.id) { entry in
+                                        QueueEntryRow(
+                                            entry: entry,
+                                            retry: { model.retry(entry) },
+                                            migrate: { model.requestIdentityMigration(entry) },
+                                            delete: { model.delete(entry) }
+                                        )
+                                    }
+                                }
                             }
                             HStack {
                                 Button("重试可恢复条目") { model.retryRecoverable() }
@@ -374,14 +447,43 @@ struct ContentView: View {
                                 Text(statusText(recent.status))
                                     .foregroundStyle(recent.status == "failed" ? .red : .green)
                             }
-                            if let reason = recent.refreshBlockReason {
-                                Text(reason == "cooldown_active" ? "重新解析冷却中" : reason == "quota_exceeded" ? "配额已用完，处理额度后可手动重试" : reason)
-                                    .font(.footnote)
-                                    .foregroundStyle(.red)
+                            // Everything below the identity check is redacted on a
+                            // mismatch: the link ID, the job ID and the result time
+                            // all describe another identity's data.
+                            if !recent.isIdentityMismatch {
+                                Text("链接 ID：\(recent.linkID)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .accessibilityIdentifier("settings.recent.link-id")
+                                if let jobID = recent.jobID {
+                                    Text("任务 ID：\(jobID)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let resultTime = SettingsTimeFormatter.absolute(recent.createdAt) {
+                                    Text("结果时间：\(resultTime)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .accessibilityIdentifier("settings.recent.result-time")
+                                }
+                            }
+                            if !recent.isIdentityMismatch, let reason = model.refreshGate.blockReason {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(reason == SettingsRefreshGatePolicy.cooldownReason ? "重新解析冷却中" : reason == SettingsRefreshGatePolicy.quotaReason ? "配额已用完，处理额度后可手动重试" : reason)
+                                    if let until = SettingsTimeFormatter.absolute(model.refreshGate.cooldownUntil) {
+                                        Text("可在 \(until) 后重试")
+                                    }
+                                }
+                                .font(.footnote)
+                                .foregroundStyle(.red)
                             }
                             if recent.status == "failed", !recent.isIdentityMismatch {
+                                // The gate is recomputed by the cooldown timer at the
+                                // exact deadline, so this unlocks on its own instead
+                                // of waiting for the next redraw to notice.
                                 Button("重新解析") { model.refreshRecent() }
-                                    .disabled(model.refreshBusy || (recent.refreshBlockReason == "cooldown_active" && (recent.refreshNotBefore ?? .distantPast) > Date()))
+                                    .disabled(model.refreshBusy || !model.refreshGate.isEnabled)
                             }
                             Button {
                                 model.clearRecent()
@@ -402,12 +504,26 @@ struct ContentView: View {
             }
                 .padding(20)
             }
-            .navigationTitle("WebTag Share")
+            .navigationTitle("设置")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            // Becoming active is the only reload trigger. A background change made
+            // by the share extension or a background completion leaves no signal in
+            // this process, so without this the screen can sit on a stale snapshot
+            // for as long as it stays open.
+            .onAppear { model.onForegroundActive() }
+            .onChange(of: scenePhase) { phase in
+                if phase == .active { model.onForegroundActive() }
+            }
+            .onDisappear { model.dispose() }
             .confirmationDialog("清空待处理条目？", isPresented: $model.showClearConfirmation) {
                 Button("确认", role: .destructive) { model.clearQueue() }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("这会删除本地队列中的 \(model.queue.count) 条记录。")
+                Text("这会删除本地队列中的 \(model.projection.queue.total) 条记录。")
             }
             .confirmationDialog("再次提交失败条目？", isPresented: $model.showPermanentRetryConfirmation) {
                 Button("确认重试") { model.confirmPermanentRetry() }
@@ -434,7 +550,7 @@ struct ContentView: View {
     }
 }
 
-private struct QueueEntryRow: View {
+struct QueueEntryRow: View {
     let entry: QueueEntry
     let retry: () -> Void
     let migrate: () -> Void
@@ -448,6 +564,19 @@ private struct QueueEntryRow: View {
                 Text(label(for: entry.state))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // Only rendered when the field exists. A placeholder would sit in
+                // the same position as a real timestamp and read as if the value
+                // were known and empty.
+                if let firstFailed = SettingsTimeFormatter.absolute(entry.firstFailedAt) {
+                    Text("首次失败：\(firstFailed)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if let nextRetry = SettingsTimeFormatter.absolute(entry.nextAttemptAt) {
+                    Text("下次重试：\(nextRetry)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 4)
             if entry.state == .blockedIdentity {
@@ -486,5 +615,3 @@ private func namespaceFingerprint(_ namespace: String) -> String {
     let digest = SHA256.hash(data: Data(namespace.utf8))
     return digest.prefix(4).map { String(format: "%02x", Int($0)) }.joined()
 }
-
-#Preview { ContentView() }

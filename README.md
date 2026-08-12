@@ -1,46 +1,73 @@
-# WebTag Share (Mobile)
+# WebTag Mobile
 
-Share targets for [WebTag](https://github.com/Alpenl/WebTag): tap **Share → WebTag**
-in any app and the link is filed into your own WebTag instance. Nothing else — no
-reading list, no reader, no bottom navigation.
+[![Android](https://github.com/Alpenl/webtag-mobile/actions/workflows/android.yml/badge.svg)](https://github.com/Alpenl/webtag-mobile/actions/workflows/android.yml)
+[![Android device](https://github.com/Alpenl/webtag-mobile/actions/workflows/android-device.yml/badge.svg)](https://github.com/Alpenl/webtag-mobile/actions/workflows/android-device.yml)
+[![iOS](https://github.com/Alpenl/webtag-mobile/actions/workflows/ios.yml/badge.svg)](https://github.com/Alpenl/webtag-mobile/actions/workflows/ios.yml)
 
-- **Android** — the maintained target. Kotlin, Compose, Room, WorkManager.
-- **iOS** — a frozen source snapshot. It builds and its XCTest contract passes, but
-  there is no signing, release, or device-verification guarantee. Do not read its
-  presence here as a supported platform.
+WebTag Mobile is the native Android and iOS action companion for a self-hosted
+WebTag server. It combines reliable system-share capture with a focused mobile
+surface for Today, TODOs, device transfers, and connection settings.
 
-The URL is persisted locally *before* the first network request, with a stable
-`Idempotency-Key`, so a failed or offline share is retried rather than lost.
+The app intentionally does not duplicate the complete Reader. Full-text
+reading, annotations, long-form note editing, search, site/subscription
+management, and AI chat remain Reader responsibilities. A projected TODO can
+open its server-provided, same-origin Reader source.
 
-## Install
+## Features
 
-Grab the APK from [Releases](../../releases) and sideload it. Then open the app once
-to enter your server URL and an API key minted with the `write` scope.
+- `Today`: overdue and due-today summaries, the next actionable TODOs, quick
+  creation, and the current device's transfer summary.
+- `Todos`: seven-day strip with Overdue, Today, Upcoming, No date, and
+  Completed groups; standalone/projected filters and offline desired-state
+  actions.
+- `Transfers`: the durable local system-share queue, retry state, identity
+  blocks, quota blocks, permanent failures, and explicit recovery actions.
+- `Settings`: HTTPS WebTag origin, API key validation, identity migration,
+  transfer recovery, and recent-result actions.
+- System share targets on Android and iOS, with a stable `Idempotency-Key`
+  persisted before the first network request.
+- Deep links for `webtag://today`, `webtag://todos`,
+  `webtag://transfers`, and `webtag://settings`.
 
-Verify what you downloaded:
+TODO cache/outbox, capture transfers, Inbox review, and server parsing jobs are
+separate domains. Completing a TODO cannot cancel a capture transfer, and a
+failed device transfer is never presented as a checkable TODO.
 
-```bash
-sha256sum -c SHA256SUMS
-apksigner verify --print-certs webtag-share-v<version>.apk
+## Repository Layout
+
+```text
+android/             Kotlin, Compose, Room v5, WorkManager, Keystore
+ios/                 Swift, SwiftUI, Share Extension, Keychain, App Group
+shared/fixtures/     cross-platform URL and queue-state contracts
+scripts/             dependency-free security and wire-contract gates
+.github/workflows/   Android, Android-device, iOS, and release automation
 ```
 
-The certificate SHA-256 is printed in every release's notes. **It must stay the same
-across upgrades** — a different fingerprint means the APK was not signed with the
-project's key, and Android will refuse to install it over an existing copy anyway.
+No server URL, API key, Apple certificate, provisioning profile, Android
+keystore, or signing password is committed to this repository.
 
-## Build
+## Continuous Integration
 
-Requires JDK 17 and an Android SDK (compileSdk 35).
+Every change to the corresponding platform is verified by public GitHub
+Actions:
 
-```bash
-./android/gradlew -p android --dependency-verification strict \
-  testDebugUnitTest assembleDebug lintDebug
-```
+- `android.yml`: shared contracts, security/wire gates, JVM tests, debug APK,
+  and Android lint on Ubuntu.
+- `android-device.yml`: all instrumentation tests on an API 26 emulator,
+  including Compose navigation, Room migrations, encrypted persistence, TODO
+  lease reclaim, and stale-owner rejection.
+- `ios.yml`: fixture validation plus the app, Share Extension, XCTest, and UI
+  test targets on an available iPhone simulator using Xcode on macOS.
+- `release.yml`: the existing Android release path. It alone can read Android
+  signing secrets and publishes signed APKs for version tags.
 
-`--dependency-verification strict` is not optional: `android/gradle/verification-metadata.xml`
-pins a SHA-256 for every dependency, so adding one means adding its checksum too.
+Third-party Actions are pinned to immutable commit SHAs. Ordinary build and
+test workflows have read-only repository permissions and never receive signing
+secrets.
 
-The full gate, which is exactly what CI runs:
+## Local Android Build
+
+Requires JDK 17 and Android SDK 35:
 
 ```bash
 python3 shared/fixtures/validate.py
@@ -49,61 +76,73 @@ python3 scripts/mobile-x1-check.py
 python3 scripts/mobile-wire-smoke.py
 ./android/gradlew -p android --dependency-verification strict \
   testDebugUnitTest assembleDebug lintDebug
+./android/gradlew -p android --dependency-verification strict \
+  connectedDebugAndroidTest
 ```
 
-`shared/fixtures/` is the cross-platform contract both platforms answer to —
-URL extraction cases and the settings queue-state grouping table. `validate.py`
-re-derives the expected answers independently, so a hand-edited expectation cannot
-teach both suites the same wrong answer.
+`connectedDebugAndroidTest` requires an emulator or physical device.
+Dependency verification is strict; new dependencies must be added to
+`android/gradle/verification-metadata.xml` with their checksums.
 
-## Release
+## Local iOS Build
 
-Releases are built and signed in CI. Signing deliberately lives **outside** Gradle:
-`scripts/mobile-x1-check.py` forbids `signingConfigs` in `build.gradle.kts`, so no key
-path or passphrase field can ever be committed. `assembleRelease` therefore produces an
-unsigned APK, and `.github/workflows/release.yml` signs it with `apksigner` using
-repository secrets. That workflow is the only one allowed to read those secrets — the
-same gate forbids `secrets.` in `android.yml`, so ordinary pull requests, including ones
-from forks, cannot reach them.
-
-### One-time key setup
-
-Generate the key **locally** and keep the `.jks` somewhere safe and backed up. Losing it
-means you can never ship an upgrade to anyone who installed a previous build; they would
-have to uninstall first, losing their queue.
+Requires Xcode and an installed iOS Simulator runtime:
 
 ```bash
-keytool -genkeypair -v \
-  -keystore webtag-share.jks \
-  -alias webtag-share \
-  -keyalg RSA -keysize 4096 -validity 10000
+xcodebuild \
+  -project ios/WebTagShare.xcodeproj \
+  -scheme WebTagShare \
+  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  CODE_SIGNING_ALLOWED=NO \
+  test
 ```
 
-Then add four repository secrets under **Settings → Secrets and variables → Actions**:
+The CI command dynamically selects an available iPhone simulator instead of
+depending on one runner image's device name. Simulator testing does not prove
+background-session behavior, production signing, App Store installation, or
+physical-device compatibility; those remain release gates.
 
-| Secret | Value |
+## Install And Connect
+
+Android release APKs are available from [GitHub Releases](../../releases).
+After installation, open Settings and enter:
+
+1. the HTTPS origin of your WebTag API, for example
+   `https://webtag.example.com`;
+2. an API key with the `write` scope.
+
+The app validates the session representation, namespace, and scope before it
+activates the connection. Credentials are stored in platform security storage.
+
+iOS currently ships as buildable source and CI-verified simulator tests. A
+signed install requires your own Apple team, bundle identifiers, App Group,
+Keychain access group, and provisioning profiles.
+
+## Android Releases
+
+The existing release workflow signs outside Gradle so ordinary build files
+never contain keystore paths or password fields. Four repository secrets are
+required for a release:
+
+| Secret | Purpose |
 | --- | --- |
-| `ANDROID_KEYSTORE_BASE64` | `base64 -w0 webtag-share.jks` |
-| `ANDROID_KEYSTORE_PASSWORD` | the keystore password |
-| `ANDROID_KEY_ALIAS` | `webtag-share` |
-| `ANDROID_KEY_PASSWORD` | the key password |
+| `ANDROID_KEYSTORE_BASE64` | base64-encoded release keystore |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_KEY_ALIAS` | signing alias |
+| `ANDROID_KEY_PASSWORD` | key password |
 
-Never commit the `.jks`; `.gitignore` already excludes `*.jks` and `*.keystore`, and CI
-fails if one appears in the tree or in the build output.
-
-### Cutting a release
-
-Bump `versionCode` and `versionName` in `android/app/build.gradle.kts`, then tag. The
-tag must match `versionName` exactly — CI refuses to publish otherwise, because a package
-whose filename and internal version disagree will silently fail to install as an upgrade.
+To release, update `versionCode` and `versionName`, then push a matching tag:
 
 ```bash
 git tag v0.2.0
 git push origin v0.2.0
 ```
 
-The workflow re-runs the whole gate, builds, signs, verifies the signature, publishes the
-APK and `SHA256SUMS`, and records the certificate fingerprint in the release notes.
+The workflow re-runs the gates, signs and verifies the APK, publishes
+`SHA256SUMS`, and records the signing certificate fingerprint in the release
+notes. Losing or rotating the Android signing key prevents in-place upgrades
+for existing installations.
 
-To rehearse without publishing, dispatch `release` from a branch: it builds, signs and
-verifies, uploads the APK as a workflow artifact, and creates no release.
+## License
+
+MIT. See [LICENSE](LICENSE).

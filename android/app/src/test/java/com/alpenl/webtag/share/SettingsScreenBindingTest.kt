@@ -18,6 +18,7 @@ import org.junit.Test
  */
 class SettingsScreenBindingTest {
     private val source: String = settingsScreenSource()
+    private val shellSource: String = companionShellSource()
 
     @Test
     fun theQueueIsRenderedAsSectionsRatherThanOneFlatList() {
@@ -46,7 +47,7 @@ class SettingsScreenBindingTest {
 
     @Test
     fun becomingVisibleReadsOnceAndThenReadsAgainAfterTheDrain() {
-        val effect = source.substringAfter("repeatOnLifecycle(Lifecycle.State.STARTED)")
+        val effect = shellSource.substringAfter("repeatOnLifecycle(Lifecycle.State.STARTED)")
             .substringBefore("\n        }\n    }")
 
         // Both reads come from `runForegroundConvergence`, which is where their order is tested. A
@@ -60,16 +61,51 @@ class SettingsScreenBindingTest {
 
     @Test
     fun everyLoadGoesThroughTheFencedLoaderAndCommitsOnlyTheProjection() {
-        val reload = source.substringAfter("suspend fun reloadLocal() {").substringBefore("\n    }")
+        val reload = shellSource.substringAfter("suspend fun reloadLocal() {").substringBefore("\n    }")
 
         assertEquals(
-            listOf("loader.load { snapshot -> projection = snapshot.toProjection() }"),
+            listOf("loader.load { snapshot = it }"),
             reload.lines().map { it.trim() }.filter { it.isNotEmpty() },
         )
         // Assigning `origin` or `apiKey` here is the regression that discards a half-typed
         // credential every time the host comes back to the foreground.
         assertFalse(reload.contains("origin ="))
         assertFalse(reload.contains("apiKey ="))
+    }
+
+    @Test
+    fun aQueueRowRendersEachTimeOnlyWhenTheInstantExists() {
+        val row = source.substringAfter("internal fun QueueRow(")
+            .substringBefore("\n@Composable\ninternal fun RecentResultCard(")
+
+        // `absolute(...)?.let { }` is the binding that makes an absent time render nothing at all.
+        // Both times go through it, so neither can regain a placeholder.
+        for (field in listOf("item.firstFailedAt", "item.nextAttemptAt")) {
+            assertTrue(
+                "$field must be rendered through the null-returning formatter",
+                row.contains("SettingsTimeFormatter.absolute($field)?.let"),
+            )
+        }
+        // An elvis or `orEmpty` here is exactly how "--" or a blank line creeps back in.
+        assertFalse("a placeholder fallback has come back", Regex("""absolute\([^)]*\)\s*(\?:|\.orEmpty)""").containsMatchIn(row))
+    }
+
+    @Test
+    fun theCooldownWaitIsRetiredByAReplacementIdentitySwitchOrDisposal() {
+        val card = recentCardSource()
+
+        // All three retire the wait the same way: the effect is keyed on the record it belongs to,
+        // so a new recent (or a mismatched replacement after an identity switch) cancels the old
+        // one, and leaving the composition disposes it. A `LaunchedEffect(Unit)` here would leave a
+        // wait running against a record that is no longer on screen.
+        assertTrue(
+            "the cooldown effect must be keyed on the record it belongs to",
+            card.contains("LaunchedEffect(recent, resumeTick)"),
+        )
+        assertTrue(
+            "the observed instant must be reset with the record",
+            card.contains("remember(recent, resumeTick)"),
+        )
     }
 
     @Test
@@ -86,6 +122,24 @@ class SettingsScreenBindingTest {
     }
 
     @Test
+    fun theCompanionShellOwnsOneObserverForAllDurableScreenState() {
+        val observer = shellSource.substringAfter("InvalidationTracker.Observer(")
+            .substringBefore(") {")
+
+        for (table in listOf(
+            "queue_entries",
+            "recent_results",
+            "active_session",
+            "todo_cache",
+            "todo_outbox",
+            "todo_sync_state",
+        )) {
+            assertTrue("$table is not observed by the shared shell", observer.contains("\"$table\""))
+        }
+        assertEquals(1, Regex("InvalidationTracker\\.Observer\\(").findAll(shellSource).count())
+    }
+
+    @Test
     fun theRecentCardOnlyEverReadsTheRedactedProjection() {
         val card = recentCardSource()
         val reads = Regex("""\brecent\.(\w+)""").findAll(card).map { it.groupValues[1] }.toSet()
@@ -96,15 +150,23 @@ class SettingsScreenBindingTest {
     }
 
     private fun recentCardSource(): String =
-        source.substringAfter("private fun RecentResultCard(").substringBefore("\nprivate fun ")
+        source.substringAfter("internal fun RecentResultCard(").substringBefore("\nprivate fun connectionMessageFor(")
 
     private companion object {
         private const val RELATIVE_PATH = "src/main/java/com/alpenl/webtag/share/MainActivity.kt"
+        private const val SHELL_RELATIVE_PATH =
+            "src/main/java/com/alpenl/webtag/share/ui/companion/CompanionApp.kt"
 
         /** Unit tests run with the module directory as their working directory. */
         fun settingsScreenSource(): String {
             val file = File(RELATIVE_PATH)
             check(file.isFile) { "$RELATIVE_PATH not found from ${File("").absolutePath}" }
+            return file.readText()
+        }
+
+        fun companionShellSource(): String {
+            val file = File(SHELL_RELATIVE_PATH)
+            check(file.isFile) { "$SHELL_RELATIVE_PATH not found from ${File("").absolutePath}" }
             return file.readText()
         }
     }

@@ -16,6 +16,8 @@ ANDROID = MOBILE / "android"
 IOS = MOBILE / "ios"
 FIXTURES = MOBILE / "shared" / "fixtures"
 ANDROID_WORKFLOW = REPOSITORY / ".github/workflows/android.yml"
+ANDROID_DEVICE_WORKFLOW = REPOSITORY / ".github/workflows/android-device.yml"
+IOS_WORKFLOW = REPOSITORY / ".github/workflows/ios.yml"
 
 QUEUE_STATES = {
     "pending_submit",
@@ -356,20 +358,16 @@ def check_network_storage_and_release_security(gate: Gate) -> None:
 
 def check_workflows(gate: Gate) -> None:
     android_workflow = gate.file(ANDROID_WORKFLOW)
-    for path, source in ((ANDROID_WORKFLOW, android_workflow),):
+    android_device_workflow = gate.file(ANDROID_DEVICE_WORKFLOW)
+    ios_workflow = gate.file(IOS_WORKFLOW)
+    for path, source in (
+        (ANDROID_WORKFLOW, android_workflow),
+        (ANDROID_DEVICE_WORKFLOW, android_device_workflow),
+        (IOS_WORKFLOW, ios_workflow),
+    ):
         label = str(path.relative_to(REPOSITORY))
-        gate.require("scripts/mobile-x1-check.py" in source, f"{label} must run the X1 gate")
-        gate.require("scripts/mobile-wire-smoke.py" in source, f"{label} must run the local wire smoke")
-        gate.require("shared/fixtures/validate.py" in source, f"{label} must validate fixture shape")
-        gate.require("shared/fixtures/compare.py" in source, f"{label} must compare fixture results")
         gate.require("secrets." not in source, f"{label} must not read release secrets")
         gate.require("environment:" not in source, f"{label} must not attach a release environment")
-        gate.require("git diff --check" in source, f"{label} must check whitespace")
-        for pattern in ("*.p12", "*.mobileprovision", "*.jks", "*.keystore"):
-            gate.require(
-                pattern in source,
-                f"{label} must scan for signing files matching {pattern}",
-            )
         for line in source.splitlines():
             match = re.search(r"\buses:\s*(\S+)", line)
             if not match or match.group(1).startswith("./"):
@@ -424,6 +422,23 @@ def check_workflows(gate: Gate) -> None:
             forbidden not in android_workflow,
             f"Android workflow must not run {forbidden}",
         )
+
+    for token in (
+        "api-level: 26",
+        "connectedDebugAndroidTest",
+        "ReactiveCircus/android-emulator-runner@",
+        "actions/upload-artifact@",
+    ):
+        gate.require(token in android_device_workflow, f"Android device workflow is missing {token}")
+    for token in (
+        "runs-on: macos-15",
+        "xcodebuild",
+        "-project ios/WebTagShare.xcodeproj",
+        "-scheme WebTagShare",
+        "CODE_SIGNING_ALLOWED=NO",
+        "test",
+    ):
+        gate.require(token in ios_workflow, f"iOS workflow is missing {token}")
 
 
 

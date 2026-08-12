@@ -3,10 +3,10 @@
 
 This standard-library reference extractor prevents a malformed or stale
 fixture from making both platform suites agree on the wrong answer. It also
-checks that the Android suite and frozen iOS snapshot remain wired to their
+checks that the Android and iOS suites remain wired to their
 real extractors and the ordered fixture source rather than merely checking the
-JSON shape. Android executes these fixtures in the required JVM gate; iOS
-runtime execution is intentionally outside the frozen snapshot gate.
+JSON shape. Android executes these fixtures in the required JVM gate and iOS
+executes its XCTest contract on GitHub's macOS runners.
 """
 
 from __future__ import annotations
@@ -182,7 +182,7 @@ def main() -> int:
     print(
         f"compared shared fixture results: {len(cases)} ordered cases, "
         f"result_digest={result_digest(cases)}, "
-        "Android and frozen iOS parameterized sources wire native extractors to the same fields"
+        "Android and iOS parameterized sources wire native extractors to the same fields"
     )
     return 0
 

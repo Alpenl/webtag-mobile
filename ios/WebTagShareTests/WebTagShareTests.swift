@@ -14,9 +14,6 @@ private final class WebTagURLProtocol: URLProtocol {
     static var failNextRequest = false
     static var requestObserver: ((URLRequest) -> Void)?
     static var requestCount = 0
-    /// Accepts the request and then never answers, which is the only way to
-    /// observe what a client does when its own deadline expires first.
-    static var pauseAfterRequest = false
 
     static func reset() {
         reply = nil
@@ -24,25 +21,6 @@ private final class WebTagURLProtocol: URLProtocol {
         failNextRequest = false
         requestObserver = nil
         requestCount = 0
-        pauseAfterRequest = false
-    }
-
-    static func bodyData(for request: URLRequest) -> Data? {
-        if let body = request.httpBody { return body }
-        guard let stream = request.httpBodyStream else { return nil }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        let bufferSize = 4 * 1024
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-        defer { buffer.deallocate() }
-        while true {
-            let count = stream.read(buffer, maxLength: bufferSize)
-            guard count >= 0 else { return nil }
-            guard count > 0 else { break }
-            data.append(buffer, count: count)
-        }
-        return data
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -50,8 +28,10 @@ private final class WebTagURLProtocol: URLProtocol {
 
     override func startLoading() {
         Self.requestCount += 1
+        // Status, headers and call count only. `URLSession` strips the body
+        // from the request it hands to a `URLProtocol`, so anything that has to
+        // assert on the bytes uses `RecordingTransport` instead.
         Self.requestObserver?(request)
-        if Self.pauseAfterRequest { return }
         if Self.failNextRequest {
             Self.failNextRequest = false
             client?.urlProtocol(
@@ -75,6 +55,74 @@ private final class WebTagURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+/// The transport the client sends through, held still so the test can read it.
+///
+/// This sits directly beneath `WebTagAPIClient` and above `URLSession`, so the
+/// `URLRequest` recorded here is the one the client built, body included. A
+/// custom `URLProtocol` cannot serve the same purpose: by the time `URLSession`
+/// hands the request over, the body has been taken off it.
+private final class RecordingTransport: HTTPTransport {
+    private let lock = NSLock()
+    private var recorded: [URLRequest] = []
+    private var parked: [CheckedContinuation<(Data, URLResponse), Error>] = []
+    private let pauseAfterRequest: Bool
+    private let onRequest: ((URLRequest) -> Void)?
+    private let reply: (URLRequest) throws -> (Data, URLResponse)
+
+    /// - Parameter pauseAfterRequest: accept the request and never answer it,
+    ///   which is the only way to observe what a client does when its own
+    ///   deadline expires while the request is still outstanding.
+    init(
+        pauseAfterRequest: Bool = false,
+        onRequest: ((URLRequest) -> Void)? = nil,
+        reply: @escaping (URLRequest) throws -> (Data, URLResponse) = { _ in throw CoreError.invalidResponse }
+    ) {
+        self.pauseAfterRequest = pauseAfterRequest
+        self.onRequest = onRequest
+        self.reply = reply
+    }
+
+    /// Every request the client handed over, in order.
+    var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        record(request)
+        onRequest?(request)
+        guard pauseAfterRequest else { return try reply(request) }
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data, URLResponse), Error>) in
+            self.park(continuation)
+        }
+    }
+
+    /// Fails every parked request, so no continuation outlives the test.
+    func releaseParked() {
+        lock.lock()
+        let waiting = parked
+        parked = []
+        lock.unlock()
+        for continuation in waiting { continuation.resume(throwing: CancellationError()) }
+    }
+
+    /// Locking lives in these synchronous frames on purpose: `NSLock` is
+    /// unavailable from an asynchronous one, and a scoped lock around a single
+    /// mutation is the whole critical section either way.
+    private func record(_ request: URLRequest) {
+        lock.lock()
+        recorded.append(request)
+        lock.unlock()
+    }
+
+    private func park(_ continuation: CheckedContinuation<(Data, URLResponse), Error>) {
+        lock.lock()
+        parked.append(continuation)
+        lock.unlock()
+    }
 }
 
 private final class RecordingUploadScheduler: QueueUploadScheduling {
@@ -590,11 +638,17 @@ final class WebTagShareTests: XCTestCase {
             error: nil
         )
 
-        let coordinator = ShareSubmissionCoordinator(repository: repository)
+        let wakeScheduler = RecordingWakeScheduler()
+        let coordinator = ShareSubmissionCoordinator(repository: repository, wakeScheduler: wakeScheduler)
         await coordinator.handleBackgroundCompletion(result, now: start.addingTimeInterval(3))
 
         XCTAssertEqual(try repository.entry(id: entry.id)?.leaseOwner, "new-owner")
         XCTAssertNil(try repository.recent())
+        // A callback that lost its claim still recomputes what is due, so the
+        // rejection cannot leave the queue without an alarm. The row is held by
+        // a live lease, so that lease's expiry is the next thing to wake for.
+        XCTAssertEqual(wakeScheduler.deadlines.count, 1)
+        XCTAssertEqual(wakeScheduler.deadlines.last!, start.addingTimeInterval(12))
     }
 
     func testRetryableForegroundFailurePersistsDeadlineBeforeAnyBackgroundWake() async throws {
@@ -918,22 +972,16 @@ final class WebTagShareTests: XCTestCase {
         let namespace = String(repeating: "s", count: 43)
         let key = "test-key"
         let url = URL(string: "https://example.org/api/links")!
-        WebTagURLProtocol.reply = { request in
-            XCTAssertEqual(request.httpMethod, "POST")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(key)")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key"), "stable-key")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-            XCTAssertEqual(WebTagURLProtocol.bodyData(for: request).flatMap { String(data: $0, encoding: .utf8) }, #"{"url":"https://example.org/article"}"#)
-            return WebTagURLProtocol.Reply(
-                status: 202,
-                headers: ["X-WebTag-Data-Namespace": namespace],
-                body: Data(#"{"link_id":"44444444-4444-4444-4444-444444444444","status":"done"}"#.utf8)
-            )
+        let transport = RecordingTransport { (_: URLRequest) -> (Data, URLResponse) in
+            let response: URLResponse = HTTPURLResponse(
+                url: url,
+                statusCode: 202,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["X-WebTag-Data-Namespace": namespace]
+            )!
+            return (Data(#"{"link_id":"44444444-4444-4444-4444-444444444444","status":"done"}"#.utf8), response)
         }
-        defer { WebTagURLProtocol.reply = nil }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [WebTagURLProtocol.self]
-        let api = WebTagAPIClient(session: URLSession(configuration: configuration))
+        let api = WebTagAPIClient(transport: transport)
         let identity = SessionIdentity(origin: "https://example.org", namespace: namespace, scopes: ["write"], representationContract: "v2")
         let result = await api.submit(identity: identity, apiKey: key, url: "https://example.org/article", idempotencyKey: "stable-key")
         guard case .success(let response) = result else {
@@ -941,6 +989,22 @@ final class WebTagShareTests: XCTestCase {
             return
         }
         XCTAssertEqual(response.status, "done")
+        // Asserted after the fact rather than inside a reply closure: an
+        // assertion that only runs if the closure runs cannot tell a wrong
+        // request apart from a request that was never sent.
+        XCTAssertEqual(transport.requests.count, 1)
+        let request = try XCTUnwrap(transport.requests.first)
+        XCTAssertEqual(request.url, url)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(key)")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key"), "stable-key")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/json")
+        // The body is exactly one member and nothing else, byte for byte.
+        XCTAssertEqual(
+            request.httpBody.flatMap { String(data: $0, encoding: .utf8) },
+            #"{"url":"https://example.org/article"}"#
+        )
     }
 
     func testForegroundSubmitResponseMatrixUsesStrict202AndNamespaceGate() async {
@@ -1579,28 +1643,17 @@ final class WebTagShareTests: XCTestCase {
         let interactionDeadline = run.startedAt + ShareCandidateCollector.interactionBudget
 
         let requestStarted = expectation(description: "the foreground request reached the transport")
-        let bodyLock = NSLock()
-        var observedBodies: [String] = []
-        WebTagURLProtocol.requestCount = 0
-        WebTagURLProtocol.pauseAfterRequest = true
-        WebTagURLProtocol.requestObserver = { request in
-            bodyLock.lock()
-            observedBodies.append(WebTagURLProtocol.bodyData(for: request).flatMap { String(data: $0, encoding: .utf8) } ?? "")
-            bodyLock.unlock()
+        // Accepted and never answered, so the interaction deadline is what ends
+        // the foreground attempt - with the request still in flight.
+        let transport = RecordingTransport(pauseAfterRequest: true, onRequest: { _ in
             requestStarted.fulfill()
-        }
-        defer {
-            WebTagURLProtocol.pauseAfterRequest = false
-            WebTagURLProtocol.requestObserver = nil
-            WebTagURLProtocol.requestCount = 0
-        }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [WebTagURLProtocol.self]
+        })
+        defer { transport.releaseParked() }
         let scheduler = RecordingUploadScheduler()
         let coordinator = ShareSubmissionCoordinator(
             repository: repository,
             credentials: keychain,
-            api: WebTagAPIClient(session: URLSession(configuration: configuration)),
+            api: WebTagAPIClient(transport: transport),
             background: scheduler,
             clock: clock
         )
@@ -1621,12 +1674,14 @@ final class WebTagShareTests: XCTestCase {
             XCTFail("an exhausted interaction budget must hand off, not fail")
             return
         }
-        bodyLock.lock()
-        let bodies = observedBodies
-        bodyLock.unlock()
+        let sent = transport.requests
+        let bodies: [String] = sent.map { (request: URLRequest) -> String in
+            guard let body = request.httpBody else { return "" }
+            return String(data: body, encoding: .utf8) ?? ""
+        }
         // From the item provider all the way into the request body, byte for byte.
         XCTAssertEqual(bodies, ["{\"url\":\"\(shared)\"}"])
-        XCTAssertEqual(WebTagURLProtocol.requestCount, 1, "the budget must not be reopened")
+        XCTAssertEqual(sent.count, 1, "the budget must not be reopened")
         let entry = try XCTUnwrap(try repository.list().first)
         XCTAssertEqual(entry.url, shared)
         XCTAssertEqual(entry.state, .pendingSubmit)
@@ -1744,5 +1799,866 @@ final class WebTagShareTests: XCTestCase {
         let recovered = try AppGroupQueueRepository(containerURL: directory)
         XCTAssertTrue(try recovered.due(now: deadline.addingTimeInterval(-0.001)).isEmpty)
         XCTAssertEqual(try recovered.due(now: deadline).map(\.id), [entry.id])
+    }
+
+    /// One alarm, for the earliest durable deadline. It has to move when a
+    /// nearer row appears and to disappear - not slide into the future - when
+    /// the last row goes.
+    func testEarliestWakeFollowsTheNearestDeadlineAndClearsWithTheQueue() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = try AppGroupQueueRepository(containerURL: directory)
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "k", count: 43))
+        try activate(repository, identity)
+        let start = Date(timeIntervalSince1970: 30_000)
+        // An empty queue asks for no alarm at all rather than a guessed one.
+        XCTAssertNil(try repository.earliestWake(now: start))
+
+        let late = try repository.enqueue(url: "https://example.org/late", identity: identity, now: start)
+        XCTAssertTrue(try repository.claim(id: late.id, owner: "late-owner", now: start))
+        XCTAssertEqual(
+            try repository.applyFailure(
+                entry: try XCTUnwrap(try repository.entry(id: late.id)), owner: "late-owner",
+                state: .retryWait, category: .server, errorCode: nil, status: 503,
+                nextAttemptAt: start.addingTimeInterval(600), firstFailedAt: start, now: start
+            ),
+            .applied
+        )
+        XCTAssertEqual(try repository.earliestWake(now: start), start.addingTimeInterval(600))
+
+        let early = try repository.enqueue(url: "https://example.org/early", identity: identity, now: start.addingTimeInterval(1))
+        XCTAssertTrue(try repository.claim(id: early.id, owner: "early-owner", now: start.addingTimeInterval(1)))
+        XCTAssertEqual(
+            try repository.applyFailure(
+                entry: try XCTUnwrap(try repository.entry(id: early.id)), owner: "early-owner",
+                state: .retryWait, category: .rateLimit, errorCode: "rate_limited", status: 429,
+                nextAttemptAt: start.addingTimeInterval(120), firstFailedAt: start.addingTimeInterval(1),
+                now: start.addingTimeInterval(1)
+            ),
+            .applied
+        )
+        // The nearer deadline replaces the pending one instead of joining it.
+        XCTAssertEqual(try repository.earliestWake(now: start.addingTimeInterval(1)), start.addingTimeInterval(120))
+        XCTAssertTrue(try repository.due(now: start.addingTimeInterval(119)).isEmpty)
+
+        try repository.delete(id: early.id)
+        XCTAssertEqual(try repository.earliestWake(now: start.addingTimeInterval(1)), start.addingTimeInterval(600))
+        try repository.delete(id: late.id)
+        XCTAssertNil(try repository.earliestWake(now: start.addingTimeInterval(1)))
+    }
+
+    /// Two rows that come due at the same instant still drain in one order, and
+    /// it is the order they were created in - never whatever SQLite felt like.
+    func testDueOrdersByDeadlineAndBreaksTiesByCreation() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = try AppGroupQueueRepository(containerURL: directory)
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "o", count: 43))
+        try activate(repository, identity)
+        let start = Date(timeIntervalSince1970: 40_000)
+        let tieFirst = try repository.enqueue(url: "https://example.org/tie-first", identity: identity, now: start)
+        let nearest = try repository.enqueue(url: "https://example.org/nearest", identity: identity, now: start.addingTimeInterval(1))
+        let tieLast = try repository.enqueue(url: "https://example.org/tie-last", identity: identity, now: start.addingTimeInterval(2))
+        let plan: [(QueueEntry, String, TimeInterval)] = [
+            (tieFirst, "tie-first", 300),
+            (nearest, "nearest", 120),
+            (tieLast, "tie-last", 300),
+        ]
+        for (entry, owner, offset) in plan {
+            XCTAssertTrue(try repository.claim(id: entry.id, owner: owner, now: start.addingTimeInterval(3)))
+            XCTAssertEqual(
+                try repository.applyFailure(
+                    entry: try XCTUnwrap(try repository.entry(id: entry.id)), owner: owner,
+                    state: .retryWait, category: .server, errorCode: nil, status: 503,
+                    nextAttemptAt: start.addingTimeInterval(offset), firstFailedAt: start.addingTimeInterval(3),
+                    now: start.addingTimeInterval(3)
+                ),
+                .applied
+            )
+        }
+
+        XCTAssertEqual(
+            try repository.due(now: start.addingTimeInterval(600)).map(\.id),
+            [nearest.id, tieFirst.id, tieLast.id]
+        )
+    }
+
+    /// A refresh answer that arrives after the recent link was replaced is
+    /// `recent_replaced` whichever of the three answers it is, and none of them
+    /// may touch the link that took its place.
+    func testEveryRefreshResultClassReportsRecentReplacedAfterTheLinkChanged() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = try AppGroupQueueRepository(containerURL: directory)
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "y", count: 43))
+        try activate(repository, identity)
+        let first = try repository.enqueue(url: "https://example.org/refresh-first", identity: identity)
+        XCTAssertTrue(try repository.claim(id: first.id, owner: "refresh-first"))
+        XCTAssertEqual(
+            try repository.finishSuccess(
+                entry: try XCTUnwrap(try repository.entry(id: first.id)), owner: "refresh-first",
+                response: SubmitResponse(linkID: "11111111-1111-1111-1111-111111111111", status: "done", jobID: nil)
+            ),
+            .applied
+        )
+        let capture = try XCTUnwrap(try repository.refreshCapture(identity: identity))
+
+        let second = try repository.enqueue(url: "https://example.org/refresh-second", identity: identity)
+        XCTAssertTrue(try repository.claim(id: second.id, owner: "refresh-second"))
+        XCTAssertEqual(
+            try repository.finishSuccess(
+                entry: try XCTUnwrap(try repository.entry(id: second.id)), owner: "refresh-second",
+                response: SubmitResponse(linkID: "22222222-2222-2222-2222-222222222222", status: "processing", jobID: nil)
+            ),
+            .applied
+        )
+
+        XCTAssertEqual(
+            try repository.recordRefreshSuccess(
+                capture: capture,
+                response: SubmitResponse(linkID: "11111111-1111-1111-1111-111111111111", status: "done", jobID: nil)
+            ),
+            .recentReplaced
+        )
+        XCTAssertEqual(
+            try repository.recordRefreshBlocked(capture: capture, notBefore: Date(timeIntervalSince1970: 50_000), reason: "cooldown_active"),
+            .recentReplaced
+        )
+        XCTAssertEqual(
+            try repository.recordRefreshBlocked(capture: capture, notBefore: nil, reason: "quota_exceeded"),
+            .recentReplaced
+        )
+
+        let recent = try XCTUnwrap(try repository.recent(identity: identity))
+        XCTAssertEqual(recent.linkID, "22222222-2222-2222-2222-222222222222")
+        XCTAssertEqual(recent.status, "processing")
+        XCTAssertNil(recent.refreshNotBefore)
+        XCTAssertNil(recent.refreshBlockReason)
+    }
+
+    /// The other side of the lease boundary. The expired-owner test pins the
+    /// instant of expiry as stale; this pins one millisecond earlier as still
+    /// committable, which is what makes that instant a boundary rather than a
+    /// rounded-off window.
+    func testCompletionOneMillisecondInsideTheLeaseStillCommits() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = try AppGroupQueueRepository(containerURL: directory)
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "z", count: 43))
+        try activate(repository, identity)
+        let start = Date(timeIntervalSince1970: 50_000)
+        let entry = try repository.enqueue(url: "https://example.org/boundary", identity: identity, now: start)
+        XCTAssertTrue(try repository.claim(id: entry.id, owner: "boundary", now: start, leaseDuration: 60))
+        XCTAssertEqual(
+            try repository.finishSuccess(
+                entry: try XCTUnwrap(try repository.entry(id: entry.id)), owner: "boundary",
+                response: SubmitResponse(linkID: "99999999-9999-9999-9999-999999999999", status: "pending", jobID: nil),
+                now: start.addingTimeInterval(59.999)
+            ),
+            .applied
+        )
+        XCTAssertTrue(try repository.list().isEmpty)
+        XCTAssertEqual(try repository.recent(identity: identity)?.linkID, "99999999-9999-9999-9999-999999999999")
+    }
+
+    // MARK: - Settings queue grouping, recent projection and lifecycle
+
+    func testSettingsQueueGroupingFollowsTheSharedFixture() throws {
+        let data = try Data(contentsOf: settingsQueueFixtureURL())
+        let fixture = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        // The same file drives the Android JVM test. A platform that quietly stops
+        // reading it would keep passing on its own hand-written expectations.
+        let declaredGroups = try XCTUnwrap(fixture["groups"] as? [[String: Any]])
+        XCTAssertEqual(
+            declaredGroups.map { $0["key"] as? String },
+            SettingsQueueGroup.allCases.map(\.rawValue),
+            "the fixture's section order is the frozen render order"
+        )
+        for group in declaredGroups {
+            let key = try XCTUnwrap(group["key"] as? String)
+            let states = try XCTUnwrap(group["states"] as? [String])
+            for rawState in states {
+                let state = try XCTUnwrap(QueueState(rawValue: rawState))
+                XCTAssertEqual(SettingsQueueGroup.group(for: state).rawValue, key, rawState)
+            }
+        }
+
+        let cases = try XCTUnwrap(fixture["cases"] as? [[String: Any]])
+        XCTAssertFalse(cases.isEmpty)
+        for testCase in cases {
+            let caseID = try XCTUnwrap(testCase["id"] as? String)
+            let rows = try XCTUnwrap(testCase["rows"] as? [[String: Any]])
+            let entries = try rows.map { try settingsQueueEntry(from: $0) }
+            let projection = SettingsQueuePresenter.project(entries)
+
+            XCTAssertEqual(projection.total, testCase["expected_total"] as? Int, caseID)
+            let expectedGroups = try XCTUnwrap(testCase["expected_groups"] as? [[String: Any]])
+            XCTAssertEqual(
+                projection.groups.map(\.group.rawValue),
+                expectedGroups.map { $0["key"] as? String },
+                "\(caseID): only non-empty sections render, in the frozen order"
+            )
+            for (rendered, expected) in zip(projection.groups, expectedGroups) {
+                XCTAssertEqual(rendered.count, expected["count"] as? Int, caseID)
+                XCTAssertEqual(
+                    rendered.rows.map(\.id),
+                    expected["row_ids"] as? [String],
+                    "\(caseID): repository order is preserved inside a section"
+                )
+            }
+        }
+    }
+
+    func testSettingsQueueTotalCountsRowsInHiddenSectionsToo() throws {
+        // Guards the difference between "what is stored" and "what is on screen":
+        // the header must not shrink when a section is hidden.
+        let entries = [
+            settingsEntry(id: "a", state: .expired),
+            settingsEntry(id: "b", state: .expired),
+        ]
+        let projection = SettingsQueuePresenter.project(entries)
+        XCTAssertEqual(projection.total, 2)
+        XCTAssertEqual(projection.groups.count, 1)
+        XCTAssertEqual(SettingsQueuePresenter.project([]).total, 0)
+        XCTAssertTrue(SettingsQueuePresenter.project([]).groups.isEmpty)
+    }
+
+    func testSettingsTimeFormatterIsAbsoluteLocaleAwareAndSilentOnMissingValues() {
+        let locale = Locale(identifier: "zh_Hans_CN")
+        let shanghai = TimeZone(identifier: "Asia/Shanghai")!
+        let utc = TimeZone(identifier: "UTC")!
+        let moment = Date(timeIntervalSince1970: 1_754_881_200)
+
+        // Expectations are rendered, never spelled out: CLDR data changes between
+        // OS releases, so a literal like "2026/8/11 11:00" pins the OS, not the code.
+        let reference = DateFormatter()
+        reference.locale = locale
+        reference.timeZone = shanghai
+        reference.dateStyle = .medium
+        reference.timeStyle = .short
+        XCTAssertEqual(
+            SettingsTimeFormatter.absolute(moment, locale: locale, timeZone: shanghai),
+            reference.string(from: moment)
+        )
+        // A time zone that does not reach the output would make the assertion above
+        // pass against a formatter that ignores both arguments.
+        XCTAssertNotEqual(
+            SettingsTimeFormatter.absolute(moment, locale: locale, timeZone: shanghai),
+            SettingsTimeFormatter.absolute(moment, locale: locale, timeZone: utc)
+        )
+        // Absolute, not relative: the date part has to be there.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = shanghai
+        let year = String(calendar.component(.year, from: moment))
+        XCTAssertEqual(SettingsTimeFormatter.absolute(moment, locale: locale, timeZone: shanghai)?.contains(year), true)
+        // No placeholder. A missing timestamp renders nothing at all.
+        XCTAssertNil(SettingsTimeFormatter.absolute(nil, locale: locale, timeZone: shanghai))
+    }
+
+    func testRecentRefreshGateRedactsAndDisablesOnIdentityMismatch() {
+        let now = Date(timeIntervalSince1970: 20_000)
+        let matched = settingsRecent(mismatch: false, notBefore: nil, reason: nil)
+        XCTAssertEqual(
+            SettingsRefreshGatePolicy.evaluate(recent: matched, now: now),
+            SettingsRecentRefreshGate(isEnabled: true, cooldownUntil: nil, blockReason: nil)
+        )
+        // A mismatched row keeps its blocked state visible but nothing else: no
+        // refresh, no deadline, no reason string that could describe another
+        // identity's data.
+        let mismatched = settingsRecent(mismatch: true, notBefore: now.addingTimeInterval(60), reason: "cooldown_active")
+        XCTAssertEqual(SettingsRefreshGatePolicy.evaluate(recent: mismatched, now: now), .unavailable)
+        XCTAssertEqual(SettingsRefreshGatePolicy.evaluate(recent: nil, now: now), .unavailable)
+    }
+
+    func testRecentRefreshGateTreatsQuotaAsABlockWithoutADeadline() {
+        let now = Date(timeIntervalSince1970: 30_000)
+        let quota = settingsRecent(mismatch: false, notBefore: nil, reason: SettingsRefreshGatePolicy.quotaReason)
+        let gate = SettingsRefreshGatePolicy.evaluate(recent: quota, now: now)
+        XCTAssertFalse(gate.isEnabled)
+        // No countdown: quota is not a timed cooldown, and arming a timer would
+        // promise a recovery time the server never gave.
+        XCTAssertNil(gate.cooldownUntil)
+
+        let clock = FakeSettingsClock(now: now)
+        let timer = SettingsCooldownTimer(clock: clock)
+        timer.arm(until: gate.cooldownUntil) { XCTFail("a quota block must not arm a timer") }
+        XCTAssertEqual(clock.pendingCount, 0)
+    }
+
+    func testCooldownUnlocksExactlyAtTheDeadlineWithoutReadingTheDatabase() {
+        let start = Date(timeIntervalSince1970: 40_000)
+        let deadline = start.addingTimeInterval(120)
+        let recent = settingsRecent(mismatch: false, notBefore: deadline, reason: SettingsRefreshGatePolicy.cooldownReason)
+        let repository = CountingSettingsRepository()
+        let clock = FakeSettingsClock(now: start)
+        let timer = SettingsCooldownTimer(clock: clock)
+
+        var gate = SettingsRefreshGatePolicy.evaluate(recent: recent, now: clock.now)
+        XCTAssertFalse(gate.isEnabled)
+        XCTAssertEqual(gate.cooldownUntil, deadline)
+        timer.arm(until: gate.cooldownUntil) {
+            gate = SettingsRefreshGatePolicy.evaluate(recent: recent, now: clock.now)
+        }
+
+        clock.advance(to: deadline.addingTimeInterval(-0.001))
+        XCTAssertFalse(gate.isEnabled, "one millisecond before the deadline the block still holds")
+        clock.advance(to: deadline)
+        XCTAssertTrue(gate.isEnabled, "the exact deadline unlocks without anything else happening")
+        XCTAssertNil(gate.cooldownUntil)
+        // The deadline changes what is displayed, not what is stored.
+        XCTAssertEqual(repository.reads, 0)
+        XCTAssertEqual(repository.writes, 0)
+    }
+
+    func testCooldownTimerIgnoresAnArmingThatWasReplacedOrDisposed() {
+        let start = Date(timeIntervalSince1970: 50_000)
+        let clock = FakeSettingsClock(now: start)
+        let timer = SettingsCooldownTimer(clock: clock)
+        var fired: [String] = []
+
+        // Replacement: the recent row changed while the first deadline was pending.
+        timer.arm(until: start.addingTimeInterval(60)) { fired.append("first") }
+        timer.arm(until: start.addingTimeInterval(90)) { fired.append("second") }
+        clock.advance(to: start.addingTimeInterval(60))
+        XCTAssertEqual(fired, [], "the replaced arming must not fire")
+        clock.advance(to: start.addingTimeInterval(90))
+        XCTAssertEqual(fired, ["second"])
+
+        // Dispose: the screen went away while a deadline was pending.
+        fired.removeAll()
+        timer.arm(until: start.addingTimeInterval(200)) { fired.append("disposed") }
+        timer.invalidate()
+        clock.advance(to: start.addingTimeInterval(200))
+        XCTAssertEqual(fired, [])
+
+        // A deadline already in the past is not worth arming for.
+        timer.arm(until: start) { fired.append("past") }
+        XCTAssertEqual(clock.pendingCount, 0)
+        XCTAssertEqual(fired, [])
+    }
+
+    func testForegroundReadShowsWhatAnotherRepositoryWroteWhileInactive() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let repository = try AppGroupQueueRepository(containerURL: directory)
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "l", count: 43))
+        try activate(repository, identity)
+        let loader = SettingsSnapshotLoader(repository: repository)
+        _ = try repository.enqueue(url: "https://example.org/a", identity: identity)
+        XCTAssertEqual(loader.loadProjection()?.queue.total, 1)
+
+        // The share extension writes through its own repository handle and cannot
+        // invalidate anything in this process, so only a fresh read can see B.
+        let other = try AppGroupQueueRepository(containerURL: directory)
+        _ = try other.enqueue(url: "https://example.org/b", identity: identity)
+
+        let afterForeground = try XCTUnwrap(loader.loadProjection())
+        XCTAssertEqual(afterForeground.queue.total, 2)
+        XCTAssertEqual(
+            afterForeground.queue.groups.flatMap(\.rows).map(\.url),
+            ["https://example.org/a", "https://example.org/b"]
+        )
+    }
+
+    func testSecondReadAfterDrainShowsWhatTheDrainChanged() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let repository = try AppGroupQueueRepository(containerURL: directory)
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "m", count: 43))
+        try activate(repository, identity)
+        let loader = SettingsSnapshotLoader(repository: repository)
+        let b = try repository.enqueue(url: "https://example.org/b", identity: identity)
+
+        let first = try XCTUnwrap(loader.loadProjection())
+        XCTAssertEqual(first.queue.groups.flatMap(\.rows).map(\.id), [b.id])
+
+        // Stands in for the drain: it is the second read, not the first, that has to
+        // show what reconcile/drain did.
+        let c = try repository.enqueue(url: "https://example.org/c", identity: identity)
+        try repository.delete(id: b.id)
+
+        let second = try XCTUnwrap(loader.loadProjection())
+        XCTAssertEqual(second.queue.groups.flatMap(\.rows).map(\.id), [c.id])
+    }
+
+    func testALateSnapshotFromAReplacedIdentityIsNotCommitted() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let repository = try AppGroupQueueRepository(containerURL: directory)
+        let first = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "n", count: 43))
+        let second = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "o", count: 43))
+        try activate(repository, first)
+        _ = try repository.enqueue(url: "https://example.org/first", identity: first)
+        let loader = SettingsSnapshotLoader(repository: repository)
+
+        // A read that started under the first identity and has not been committed yet.
+        let stale = try loader.snapshot()
+
+        try activate(repository, second)
+        _ = try repository.enqueue(url: "https://example.org/second", identity: second)
+        let current = try loader.snapshot()
+        XCTAssertTrue(loader.commit(current))
+
+        // Released only now, after the newer one already landed.
+        XCTAssertFalse(loader.commit(stale), "a snapshot from a replaced identity must not repaint the screen")
+
+        // A → B → A gets a third revision, so an in-flight A load is still stale.
+        try activate(repository, first)
+        XCTAssertFalse(loader.commit(stale))
+    }
+
+    func testCompanionTodoPresenterBuildsSevenDayAndStableSections() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_753_776_000) // 2025-07-29 00:00:00Z
+        let items = [
+            companionTodo(id: "00000000-0000-0000-0000-000000000001", text: "overdue", dueAt: now.addingTimeInterval(-86_400)),
+            companionTodo(id: "00000000-0000-0000-0000-000000000002", text: "today", dueAt: now.addingTimeInterval(18 * 3_600)),
+            companionTodo(id: "00000000-0000-0000-0000-000000000003", text: "later", dueAt: now.addingTimeInterval(2 * 86_400)),
+            companionTodo(id: "00000000-0000-0000-0000-000000000004", text: "none", dueAt: nil),
+            companionTodo(id: "00000000-0000-0000-0000-000000000005", text: "done", dueAt: now, done: true),
+        ]
+
+        let projection = CompanionTodoPresenter.project(items, now: now, calendar: calendar)
+
+        XCTAssertEqual(projection.days.count, 7)
+        XCTAssertEqual(projection.openCount, 4)
+        XCTAssertEqual(projection.overdueCount, 1)
+        XCTAssertEqual(projection.todayCount, 1)
+        XCTAssertEqual(projection.sections.map(\.section), CompanionTodoSection.allCases)
+        XCTAssertEqual(projection.sections.map { $0.items.map(\.text) }, [["overdue"], ["today"], ["later"], ["none"], ["done"]])
+    }
+
+    func testCompanionTodoStateIsEncryptedAndPersistsDesiredState() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let key = Data(repeating: 7, count: 32)
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "t", count: 43))
+        let repository = try CompanionTodoRepository(
+            containerURL: directory,
+            cipher: CompanionTodoAESGCMCipher(keyData: key)
+        )
+
+        let localID = try repository.stageCreate(
+            identity: identity,
+            request: CompanionTodoCreate(text: "private offline task", dueAt: nil),
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+        let first = try repository.snapshot(identity: identity)
+        XCTAssertEqual(first.items.map(\.id), [localID])
+        XCTAssertEqual(first.items.first?.text, "private offline task")
+        XCTAssertTrue(first.items.first?.localOnly == true)
+        XCTAssertEqual(first.pendingOperations, 1)
+
+        let disk = try Data(contentsOf: directory.appendingPathComponent("companion-todo-state.v1"))
+        XCTAssertNil(String(data: disk, encoding: .utf8)?.range(of: "private offline task"))
+
+        let reopened = try CompanionTodoRepository(
+            containerURL: directory,
+            cipher: CompanionTodoAESGCMCipher(keyData: key)
+        )
+        XCTAssertEqual(try reopened.snapshot(identity: identity), first)
+    }
+
+    func testCompanionTodoLeaseExpiresRebindsAndRejectsStaleOwner() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = try CompanionTodoRepository(
+            containerURL: directory,
+            cipher: CompanionTodoAESGCMCipher(keyData: Data(repeating: 8, count: 32))
+        )
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "u", count: 43))
+        let start = Date(timeIntervalSince1970: 2_000)
+        let localID = try repository.stageCreate(
+            identity: identity,
+            request: CompanionTodoCreate(text: "created offline", dueAt: nil),
+            now: start
+        )
+        _ = try repository.stagePatch(
+            identity: identity,
+            todoID: localID,
+            patch: CompanionTodoPatch(text: "edited offline", dueAt: nil, dueAtSet: false, done: nil, expectedHostRevision: nil),
+            now: start.addingTimeInterval(1)
+        )
+        let first = try XCTUnwrap(repository.claimDue(identity: identity, now: start, leaseDuration: 10))
+        XCTAssertNil(
+            try repository.claimDue(identity: identity, now: start.addingTimeInterval(1), leaseDuration: 10),
+            "a later operation for the same TODO must not overtake its leased create"
+        )
+        let second = try XCTUnwrap(repository.claimDue(identity: identity, now: start.addingTimeInterval(11), leaseDuration: 10))
+        XCTAssertEqual(first.operation.id, second.operation.id)
+        XCTAssertNotEqual(first.owner, second.owner)
+
+        XCTAssertThrowsError(try repository.completeCreate(
+            identity: identity,
+            operationID: first.operation.id,
+            owner: first.owner,
+            created: companionTodo(id: "10000000-0000-0000-0000-000000000001", text: "server", dueAt: nil)
+        )) { error in
+            XCTAssertEqual(error as? TodoStateError, .staleClaim)
+        }
+
+        let server = companionTodo(
+            id: "10000000-0000-0000-0000-000000000001",
+            text: "server",
+            dueAt: nil
+        )
+        try repository.completeCreate(
+            identity: identity,
+            operationID: second.operation.id,
+            owner: second.owner,
+            created: server,
+            now: start.addingTimeInterval(12)
+        )
+        let snapshot = try repository.snapshot(identity: identity)
+        XCTAssertEqual(snapshot.items.map(\.id), [server.id])
+        XCTAssertEqual(snapshot.items.first?.text, "edited offline")
+        XCTAssertTrue(snapshot.items.first?.pending == true)
+        XCTAssertEqual(snapshot.pendingOperations, 1)
+    }
+
+    func testCompanionTodoConflictRebasesDesiredDoneWithANewOperationID() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = try CompanionTodoRepository(
+            containerURL: directory,
+            cipher: CompanionTodoAESGCMCipher(keyData: Data(repeating: 9, count: 32))
+        )
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "w", count: 43))
+        let item = CompanionTodoItem(
+            id: "30000000-0000-0000-0000-000000000001",
+            text: "projected",
+            dueAt: nil,
+            done: false,
+            originKind: .note,
+            originHostKind: "note",
+            originHostID: "note-one",
+            hostRevision: 2,
+            createdAt: Date(timeIntervalSince1970: 3_000),
+            updatedAt: Date(timeIntervalSince1970: 3_000)
+        )
+        try repository.replaceServerSnapshot(identity: identity, items: [item])
+        let firstCreatedAt = Date(timeIntervalSince1970: 3_010)
+        let originalID = try repository.stagePatch(
+            identity: identity,
+            todoID: item.id,
+            patch: CompanionTodoPatch(text: nil, dueAt: nil, dueAtSet: false, done: true, expectedHostRevision: 2),
+            now: firstCreatedAt
+        )
+        let laterID = try repository.stagePatch(
+            identity: identity,
+            todoID: item.id,
+            patch: CompanionTodoPatch(text: nil, dueAt: nil, dueAtSet: false, done: false, expectedHostRevision: 2),
+            now: firstCreatedAt
+        )
+        let original = try XCTUnwrap(repository.claimDue(identity: identity))
+        let refreshed = CompanionTodoItem(
+            id: item.id,
+            text: item.text,
+            dueAt: nil,
+            done: false,
+            originKind: .note,
+            originHostKind: "note",
+            originHostID: "note-one",
+            hostRevision: 3,
+            createdAt: item.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 3_100)
+        )
+
+        try repository.rebaseDoneConflict(
+            identity: identity,
+            operationID: original.operation.id,
+            owner: original.owner,
+            desiredDone: true,
+            current: refreshed,
+            snapshot: [refreshed],
+            now: firstCreatedAt.addingTimeInterval(2)
+        )
+
+        let rebased = try XCTUnwrap(repository.claimDue(identity: identity))
+        XCTAssertEqual(original.operation.id, originalID)
+        XCTAssertNotEqual(rebased.operation.id, original.operation.id)
+        XCTAssertNotEqual(rebased.operation.id, laterID, "a later operation must not overtake a rebased conflict")
+        XCTAssertEqual(rebased.operation.createdAt, firstCreatedAt)
+        XCTAssertEqual(rebased.operation.patch?.done, true)
+        XCTAssertEqual(rebased.operation.patch?.expectedHostRevision, 3)
+
+        let completed = CompanionTodoItem(
+            id: refreshed.id,
+            text: refreshed.text,
+            dueAt: nil,
+            done: true,
+            originKind: .note,
+            originHostKind: "note",
+            originHostID: "note-one",
+            hostRevision: 4,
+            createdAt: refreshed.createdAt,
+            updatedAt: firstCreatedAt.addingTimeInterval(3)
+        )
+        try repository.completePatch(
+            identity: identity,
+            operationID: rebased.operation.id,
+            owner: rebased.owner,
+            updated: completed
+        )
+        let later = try XCTUnwrap(repository.claimDue(identity: identity))
+        XCTAssertEqual(later.operation.id, laterID)
+        XCTAssertEqual(later.operation.patch?.expectedHostRevision, 4)
+    }
+
+    func testCompanionTodoAPIUsesPaginationNamespaceAndStableIdempotencyKey() async throws {
+        let namespace = String(repeating: "v", count: 43)
+        let identity = SessionIdentity(
+            origin: "https://example.org",
+            namespace: namespace,
+            scopes: ["write"],
+            representationContract: "v2"
+        )
+        let firstItem = companionTodo(id: "20000000-0000-0000-0000-000000000001", text: "first", dueAt: nil)
+        let secondItem = companionTodo(id: "20000000-0000-0000-0000-000000000002", text: "second", dueAt: nil)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let transport = RecordingTransport { request in
+            let response = try XCTUnwrap(HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["X-WebTag-Data-Namespace": namespace]
+            ))
+            let after = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "after" })?.value
+            let page: [String: Any]
+            if after == nil {
+                page = ["items": [try jsonObject(firstItem, encoder: encoder)], "next_after": "page-two"]
+            } else {
+                XCTAssertEqual(after, "page-two")
+                page = ["items": [try jsonObject(secondItem, encoder: encoder)]]
+            }
+            return (try JSONSerialization.data(withJSONObject: page), response)
+        }
+        let api = CompanionTodoAPIClient(transport: transport)
+
+        let listed = try await api.listTodos(identity: identity, apiKey: "secret").get()
+
+        XCTAssertEqual(listed.map(\.id), [firstItem.id, secondItem.id])
+        XCTAssertEqual(transport.requests.count, 2)
+        XCTAssertEqual(transport.requests.first?.url?.path, "/api/todos")
+        XCTAssertEqual(
+            URLComponents(url: try XCTUnwrap(transport.requests.first?.url), resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "limit" })?.value,
+            "200"
+        )
+
+        let createTransport = RecordingTransport { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key"), "offline-operation-id")
+            XCTAssertEqual(request.httpMethod, "POST")
+            let response = try XCTUnwrap(HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 201,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["X-WebTag-Data-Namespace": namespace]
+            ))
+            return (try encoder.encode(firstItem), response)
+        }
+        let createAPI = CompanionTodoAPIClient(transport: createTransport)
+        _ = try await createAPI.createTodo(
+            identity: identity,
+            apiKey: "secret",
+            request: CompanionTodoCreate(text: "first", dueAt: nil),
+            idempotencyKey: "offline-operation-id"
+        ).get()
+        XCTAssertEqual(createTransport.requests.count, 1)
+    }
+
+    @MainActor
+    func testLifecycleReloadDoesNotOverwriteUnsavedCredentialDrafts() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let keychain = KeychainCredentialStore()
+        keychain.clear()
+        defer { keychain.clear() }
+
+        let repository = try AppGroupQueueRepository(containerURL: directory)
+        let identity = QueueIdentity(origin: "https://example.org", namespace: String(repeating: "p", count: 43))
+        try activate(repository, identity)
+        let model = WebTagSettingsModel(clock: FakeSettingsClock(now: Date(timeIntervalSince1970: 60_000)), repository: repository)
+
+        model.origin = "https://half-typed.example"
+        model.apiKey = "half-typed-key"
+        _ = try repository.enqueue(url: "https://example.org/queued", identity: identity)
+
+        model.reload()
+
+        XCTAssertEqual(model.projection.queue.total, 1, "the reload really did replace the projection")
+        XCTAssertEqual(model.origin, "https://half-typed.example")
+        XCTAssertEqual(model.apiKey, "half-typed-key")
+    }
+}
+
+private func companionTodo(
+    id: String,
+    text: String,
+    dueAt: Date?,
+    done: Bool = false
+) -> CompanionTodoItem {
+    CompanionTodoItem(
+        id: id,
+        text: text,
+        dueAt: dueAt,
+        done: done,
+        originKind: .standalone,
+        hostRevision: 0,
+        completedAt: done ? Date(timeIntervalSince1970: 4_000) : nil,
+        createdAt: Date(timeIntervalSince1970: 3_000),
+        updatedAt: Date(timeIntervalSince1970: 4_000)
+    )
+}
+
+private func jsonObject(_ item: CompanionTodoItem, encoder: JSONEncoder) throws -> [String: Any] {
+    try XCTUnwrap(try JSONSerialization.jsonObject(with: encoder.encode(item)) as? [String: Any])
+}
+
+// MARK: - Settings projection test doubles
+
+private func settingsQueueFixtureURL() -> URL {
+    URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("shared/fixtures/queue-states.json")
+}
+
+private let settingsFixtureIdentity = QueueIdentity(
+    origin: "https://example.org",
+    namespace: String(repeating: "q", count: 43)
+)
+
+private func settingsEntry(
+    id: String,
+    state: QueueState,
+    url: String = "https://example.org/row",
+    firstFailedAt: Date? = nil,
+    nextAttemptAt: Date? = nil
+) -> QueueEntry {
+    QueueEntry(
+        id: id,
+        schemaVersion: 1,
+        url: url,
+        idempotencyKey: "key-\(id)",
+        requestFingerprint: "fingerprint-\(id)",
+        identity: settingsFixtureIdentity,
+        identityRevision: 1,
+        state: state,
+        createdAt: Date(timeIntervalSince1970: 1_000),
+        firstFailedAt: firstFailedAt,
+        attemptCount: 0,
+        nextAttemptAt: nextAttemptAt,
+        lastError: nil,
+        lastErrorCode: nil,
+        lastHTTPStatus: nil,
+        linkID: nil,
+        jobID: nil,
+        leaseOwner: nil,
+        leaseExpiresAt: nil
+    )
+}
+
+/// Milliseconds in the shared fixture, seconds in `Date`. Kept in one place so the
+/// two platforms cannot drift into disagreeing about the unit.
+private func settingsFixtureDate(_ milliseconds: Any?) -> Date? {
+    guard let milliseconds = milliseconds as? Double else { return nil }
+    return Date(timeIntervalSince1970: milliseconds / 1000)
+}
+
+private func settingsQueueEntry(from row: [String: Any]) throws -> QueueEntry {
+    let id = try XCTUnwrap(row["id"] as? String)
+    let state = try XCTUnwrap(QueueState(rawValue: try XCTUnwrap(row["state"] as? String)))
+    return settingsEntry(
+        id: id,
+        state: state,
+        url: (row["url"] as? String) ?? "",
+        firstFailedAt: settingsFixtureDate(row["first_failed_at"]),
+        nextAttemptAt: settingsFixtureDate(row["next_attempt_at"])
+    )
+}
+
+private func settingsRecent(mismatch: Bool, notBefore: Date?, reason: String?) -> RecentResult {
+    RecentResult(
+        url: mismatch ? "" : "https://example.org/recent",
+        linkID: mismatch ? "" : "44444444-4444-4444-4444-444444444444",
+        jobID: mismatch ? nil : "job-1",
+        status: "failed",
+        createdAt: Date(timeIntervalSince1970: 5_000),
+        identity: settingsFixtureIdentity,
+        identityRevision: 1,
+        refreshNotBefore: notBefore,
+        refreshBlockReason: reason,
+        isIdentityMismatch: mismatch
+    )
+}
+
+/// Counts every touch so "the deadline performs no database work" can be asserted
+/// rather than assumed. There is no write path here at all: reaching for one would
+/// not compile, which is a stronger statement than a counter that stays at zero.
+private final class CountingSettingsRepository: SettingsSnapshotReading {
+    var snapshot: ActiveSessionSnapshot?
+    var entries: [QueueEntry] = []
+    var recentResult: RecentResult?
+    private(set) var reads = 0
+    private(set) var writes = 0
+
+    func activeSessionSnapshot() throws -> ActiveSessionSnapshot? {
+        reads += 1
+        return snapshot
+    }
+
+    func list(identity: QueueIdentity?) throws -> [QueueEntry] {
+        reads += 1
+        return entries
+    }
+
+    func recent(identity: QueueIdentity?) throws -> RecentResult? {
+        reads += 1
+        return recentResult
+    }
+}
+
+/// Wall clock under test control. `advance(to:)` runs exactly the callbacks whose
+/// deadline the move crossed, so "one millisecond before" and "at the deadline" are
+/// two different observations rather than one racy one.
+private final class FakeSettingsClock: SettingsWallClock {
+    private(set) var now: Date
+    private var pending: [(deadline: Date, body: () -> Void)] = []
+
+    init(now: Date) {
+        self.now = now
+    }
+
+    var pendingCount: Int { pending.count }
+
+    func schedule(after delay: TimeInterval, _ body: @escaping () -> Void) {
+        pending.append((now.addingTimeInterval(delay), body))
+    }
+
+    func advance(to date: Date) {
+        now = date
+        let due = pending.filter { $0.deadline <= date }
+        pending.removeAll { $0.deadline <= date }
+        for item in due { item.body() }
     }
 }
